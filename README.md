@@ -26,7 +26,7 @@ supported.
 | Phase | What | State |
 |-------|------|-------|
 | 1 | Indexer (SemanticDB + scalameta), SQLite graph, CLI queries | done |
-| 2 | Web viewer: walk down through forks, walk up to entrypoints | next |
+| 2 | Web viewer: walk down through forks, walk up to entrypoints | done |
 | 3 | Endpoints: Play routes, Tapir, http4s, ZIO HTTP, Akka/Pekko HTTP | planned |
 | 4 | Cross-service links: gRPC, Tapir shared endpoints, HTTP clients, Kafka | planned |
 | 5 | Narrowing forks using DI wiring (Guice bindings, constructor sites) | planned |
@@ -35,27 +35,56 @@ See [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Usage
 
-Requirements: JDK 17+ and sbt. If sbt isn't installed, `bin/sbt` downloads the launcher from
-Maven Central.
+Requirements: JDK 17+, and npm for the web viewer. sbt is used when installed. Otherwise
+`bin/sbt` downloads the launcher from Maven Central. `bin/pylon` builds the viewer and the CLI jar
+on first use, and again whenever the sources change.
 
 ```bash
-# Index one or more services (each is an sbt build). Builds are compiled with SemanticDB
-# turned on through an injected plugin; no build file is modified.
-bin/sbt "cli/run index --service search=fixtures/search-3 --service legacy=fixtures/search-213"
+# 1. Index one or more services (each is an sbt build). Builds are compiled with SemanticDB
+#    turned on through an injected sbt plugin; no build file is modified.
+bin/pylon index --service search=fixtures/search-3 --service legacy=fixtures/search-213
 
-# Query the graph (stored in .pylon/graph.db)
-bin/sbt "cli/run query impls ProviderTrait.search"        # implementations
-bin/sbt "cli/run query callees ProviderA.search"          # what it calls (forks listed)
-bin/sbt "cli/run query callers ElasticSearchServiceA.search"  # who calls it, incl. through traits
-bin/sbt "cli/run query paths ElasticSearchServiceA.search"    # call chains from entrypoints
+# 2. Open the interactive map on a method (or an endpoint handler, or a trait)
+bin/pylon map ProviderTrait.search          # what does it call?  (--up: who calls it?)
+```
+
+In the map:
+
+- **Calls ↓.** Each box is a step of the walk. When the step is a trait method, its box lists the
+  implementations. Pick one and the box becomes that implementation, with its calls fanning out to
+  the right on arrows labelled with the method name. A `⑂` marks a call into a trait; hover over
+  it to jump straight into one of its implementations.
+- **Breadcrumb.** Click any earlier step to go back to it. The `⑂` chip on a step's box switches its
+  implementation, and the rest of the chain is rebuilt from there. The browser's back button
+  undoes the last change, and the URL can be shared.
+- **Callers ↑.** Climb from a method to its callers, including callers that go through the trait
+  it implements. *Open as call chain* turns the climbed path back into a downward walk, with every
+  fork already chosen.
+- **Details panel.** Shows the selected method's source, with the lines that call the next step
+  highlighted. It also lists implementations and overrides, and *paths from entrypoints*: every
+  call chain from a root (a `main` today; HTTP handlers in phase 3) down to the method.
+
+The same queries are available as text:
+
+```bash
+bin/pylon query impls ProviderTrait.search            # implementations
+bin/pylon query callees ProviderA.search              # what it calls (forks listed; --all adds library calls)
+bin/pylon query callers ElasticSearchServiceA.search  # who calls it, incl. through traits
+bin/pylon query paths ElasticSearchServiceA.search    # call chains from entrypoints
 ```
 
 Symbols can be given as `Type.method`, `pkg.Type.method`, `Type#method`, or a raw SemanticDB
-symbol. `--all` includes library calls in `callees`. Set `PYLON_SBT` to choose the sbt
-executable used to compile the indexed builds (default: `sbt` on the PATH).
+symbol. The graph is stored in `.pylon/graph.db` (`--db` to change). Set `PYLON_SBT` to choose the
+sbt executable used to compile indexed builds.
 
 ## Development
 
 ```bash
-bin/sbt test   # unit tests + indexes both fixtures (fixtures/search-213, fixtures/search-3)
+bin/sbt test                  # store/API unit tests + indexes both fixtures (Scala 2.13 and 3)
+npm --prefix viewer run dev   # viewer with hot reload, proxying the API of `bin/pylon serve`
+
+# Browser end-to-end check (uses Playwright's Chromium) against the fixtures:
+bin/pylon index --service search=fixtures/search-3 --service legacy=fixtures/search-213
+bin/pylon serve --port 7777 &
+npm --prefix viewer run e2e
 ```

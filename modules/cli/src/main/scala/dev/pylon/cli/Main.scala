@@ -2,8 +2,11 @@ package dev.pylon.cli
 
 import dev.pylon.core._
 import dev.pylon.indexer.Indexer
-import java.nio.file.{Path, Paths}
-import scala.util.Using
+import dev.pylon.server.PylonServer
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path, Paths}
+import scala.util.{Try, Using}
 
 object Main {
 
@@ -13,9 +16,12 @@ object Main {
       |Usage:
       |  pylon index [--db PATH] [--no-compile] [--semanticdb-version V] --service NAME=PATH [--service NAME=PATH ...]
       |  pylon query [--db PATH] [--all] (find|impls|callees|callers|paths) QUERY
+      |  pylon map   [--db PATH] [--port N] [--up] [--no-open] QUERY   open the interactive map on QUERY
+      |  pylon serve [--db PATH] [--port N] [--host H] [--static DIR]  serve the viewer without a starting point
       |  pylon services [--db PATH]
       |
       |QUERY is a symbol such as ProviderTrait.search, com.acme.ProviderA.search or a SemanticDB symbol.
+      |`map` opens the browser on the down view ("what does it call?"), or the up view with --up.
       |The graph is stored in .pylon/graph.db unless --db is given. sbt is taken from $PYLON_SBT or the PATH.
       |""".stripMargin
 
@@ -37,7 +43,7 @@ object Main {
     def db: Path = Paths.get(flags.get("--db").flatMap(_.lastOption).getOrElse(".pylon/graph.db"))
   }
 
-  private val valueFlags = Set("--db", "--service", "--semanticdb-version", "--port")
+  private val valueFlags = Set("--db", "--service", "--semanticdb-version", "--port", "--host", "--static")
 
   private def parseArgs(args: List[String]): Args = {
     def go(rest: List[String], acc: Args): Args = rest match {
@@ -54,6 +60,8 @@ object Main {
   def run(args: List[String]): Int = args match {
     case "index" :: rest    => index(parseArgs(rest))
     case "query" :: rest    => query(parseArgs(rest))
+    case "map" :: rest      => map(parseArgs(rest))
+    case "serve" :: rest    => serve(parseArgs(rest), None)
     case "services" :: rest => withStore(parseArgs(rest)) { s => s.services.foreach { case (n, r) => println(s"$n\t$r") }; 0 }
     case ("help" | "--help" | "-h") :: _ => println(usage); 0
     case Nil                => println(usage); 0
@@ -121,8 +129,56 @@ object Main {
     }
   }
 
-  /** Picks the best match, preferring project methods. */
-  def resolve(store: GraphStore, q: String): Option[SymbolNode] = store.find(q, limit = 5).headOption
+  private def map(a: Args): Int = {
+    val q = a.positional.mkString(" ").trim
+    if (q.isEmpty) throw new UsageError("map needs a symbol, e.g. pylon map ProviderTrait.search")
+    val target = withStore(a)(resolve(_, q)).getOrElse(throw new IllegalArgumentException(s"no symbol matches '$q'"))
+    val mode   = if (a.switches("--up")) "up" else "down"
+    serve(a, Some(s"?sym=${URLEncoder.encode(target.symbol, StandardCharsets.UTF_8)}&mode=$mode"))
+  }
+
+  /** Serves the viewer until the process is killed; `start` is the page to open. */
+  private def serve(a: Args, start: Option[String]): Int = {
+    if (!Files.isRegularFile(a.db)) throw new IllegalArgumentException(s"${a.db} does not exist; run `pylon index` first")
+    val store  = GraphStore.open(a.db)
+    val host   = a.flags.get("--host").flatMap(_.lastOption).getOrElse("127.0.0.1")
+    val port   = a.flags.get("--port").flatMap(_.lastOption).map(p => p.toIntOption.getOrElse(throw new UsageError(s"bad port $p"))).getOrElse(7777)
+    val server = new PylonServer(store, host, port, a.flags.get("--static").flatMap(_.lastOption).map(Paths.get(_)))
+    val bound  = server.start()
+    val url    = s"http://${if (host == "0.0.0.0") "localhost" else host}:$bound/${start.getOrElse("")}"
+    println(s"Pylon map: $url")
+    println("Press Ctrl+C to stop.")
+    if (start.isDefined && !a.switches("--no-open")) openBrowser(url)
+    sys.addShutdownHook { server.stop(); store.close() }
+    Thread.currentThread().join()
+    0
+  }
+
+  private def openBrowser(url: String): Unit = {
+    val viaDesktop = Try {
+      java.awt.Desktop.isDesktopSupported && java.awt.Desktop.getDesktop.isSupported(java.awt.Desktop.Action.BROWSE) && {
+        java.awt.Desktop.getDesktop.browse(java.net.URI.create(url)); true
+      }
+    }.getOrElse(false)
+    if (!viaDesktop) {
+      val opener = if (sys.props("os.name").toLowerCase.contains("mac")) "open" else "xdg-open"
+      Try(new ProcessBuilder(opener, url).redirectErrorStream(true).start())
+    }
+  }
+
+  /** Picks the best match, preferring project methods, and says so when the query is ambiguous. */
+  def resolve(store: GraphStore, q: String): Option[SymbolNode] = {
+    val matches = store.find(q, limit = 5)
+    matches.headOption.foreach { best =>
+      val others = matches.tail.filter(m => m.display == best.display && m.kind == best.kind)
+      if (others.nonEmpty)
+        Console.err.println(
+          s"note: '$q' matches ${others.size + 1} symbols; using ${best.symbol} (${best.service.getOrElse("external")}). " +
+            s"Qualify it with its package, e.g. ${others.head.symbol.replace('/', '.').replace('#', '.').stripSuffix("().").stripSuffix(".")}"
+        )
+    }
+    matches.headOption
+  }
 }
 
 object Format {

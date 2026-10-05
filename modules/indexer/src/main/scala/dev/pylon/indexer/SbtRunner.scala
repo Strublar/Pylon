@@ -68,7 +68,16 @@ object SbtRunner {
       if (tail.size > 40) tail.dequeue()
       if (line.contains("[error]") || line.contains("compiling")) log(s"  $line")
     }
-    val exit = Process(cmd, root.toFile).run(logger, connectInput = false).exitValue()
+    val process =
+      try Process(cmd, root.toFile).run(logger, connectInput = false)
+      catch {
+        case e: java.io.IOException =>
+          throw new IllegalStateException(
+            s"could not run '${cmd.head}' (${e.getMessage}). Install sbt, set PYLON_SBT to an sbt executable, " +
+              "or use Pylon's bin/pylon launcher, which falls back to bin/sbt."
+          )
+      }
+    val exit = process.exitValue()
     if (exit != 0) throw Failed(exit, tail.toSeq)
   }
 }

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Pylon launcher: builds the web viewer and the CLI jar when they are missing or stale, then runs it.
+#   bin/pylon index --service search=../my-service
+#   bin/pylon map ProviderTrait.search
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+JAR="$ROOT/modules/cli/target/scala-2.13/pylon.jar"
+VIEWER_INDEX="$ROOT/modules/server/src/main/resources/viewer/index.html"
+
+# Indexing compiles the target builds with sbt; fall back to the bundled launcher.
+if [[ -z "${PYLON_SBT:-}" ]] && ! command -v sbt >/dev/null 2>&1; then
+  export PYLON_SBT="$ROOT/bin/sbt"
+fi
+
+stale() { # stale TARGET DIR... : true when TARGET is missing or older than any file under DIRs
+  local target="$1"; shift
+  [[ ! -f "$target" ]] && return 0
+  [[ -n "$(find "$@" -type f -newer "$target" -not -path '*/node_modules/*' -not -path '*/target/*' -print -quit 2>/dev/null)" ]]
+}
+
+if stale "$VIEWER_INDEX" "$ROOT/viewer/src" "$ROOT/viewer/index.html" "$ROOT/viewer/package.json"; then
+  if command -v npm >/dev/null 2>&1; then
+    echo "[pylon] building the web viewer" >&2
+    (cd "$ROOT/viewer" && { [[ -d node_modules ]] || npm ci --no-audit --no-fund >&2; } && npm run build >&2)
+  elif [[ ! -f "$VIEWER_INDEX" ]]; then
+    echo "[pylon] npm not found: the web viewer will not be available (CLI queries still work)" >&2
+  fi
+fi
+
+if stale "$JAR" "$ROOT/modules" "$ROOT/build.sbt" "$ROOT/project/plugins.sbt"; then
+  echo "[pylon] building pylon.jar" >&2
+  (cd "$ROOT" && "${PYLON_SBT:-sbt}" cli/assembly </dev/null >&2)
+fi
+
+exec java ${PYLON_JAVA_OPTS:-} -jar "$JAR" "$@"

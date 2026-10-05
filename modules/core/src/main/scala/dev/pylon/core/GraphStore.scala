@@ -28,19 +28,19 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
     exec("INSERT INTO services(name, root) VALUES (?, ?)", graph.service, graph.root)
 
     batch(
-      """INSERT INTO symbols(symbol, kind, name, owner, display, signature, service, file, line, abstract)
-        |VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      """INSERT INTO symbols(symbol, kind, name, owner, display, signature, service, file, line, abstract, end_line)
+        |VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         |ON CONFLICT(symbol) DO UPDATE SET
         |  kind = excluded.kind, name = excluded.name, owner = excluded.owner, display = excluded.display,
         |  signature = excluded.signature, service = excluded.service, file = excluded.file,
-        |  line = excluded.line, abstract = excluded.abstract
+        |  line = excluded.line, abstract = excluded.abstract, end_line = excluded.end_line
         |WHERE symbols.service IS NULL""".stripMargin,
       graph.symbols
     )(bindSymbol)
     batch(
-      """INSERT OR IGNORE INTO symbols(symbol, kind, name, owner, display, signature, service, file, line, abstract)
-        |VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin,
-      graph.externals.map(_.copy(service = None, file = None, line = None))
+      """INSERT OR IGNORE INTO symbols(symbol, kind, name, owner, display, signature, service, file, line, abstract, end_line)
+        |VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin,
+      graph.externals.map(_.copy(service = None, file = None, line = None, endLine = None))
     )(bindSymbol)
     batch("INSERT OR IGNORE INTO extends(child, parent, service) VALUES (?, ?, ?)", graph.extendsEdges) {
       case (st, (child, parent)) => st.setString(1, child); st.setString(2, parent); st.setString(3, graph.service)
@@ -62,7 +62,7 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
     exec("DELETE FROM overrides WHERE service = ?", service)
     // Symbols still referenced by other services become external again instead of disappearing.
     exec(
-      """UPDATE symbols SET service = NULL, file = NULL, line = NULL
+      """UPDATE symbols SET service = NULL, file = NULL, line = NULL, end_line = NULL
         |WHERE service = ? AND symbol IN (SELECT callee FROM calls)""".stripMargin,
       service
     )
@@ -241,12 +241,20 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
   // Plumbing
 
   private def createSchema(): Unit = {
+    // The database is a cache of the index: on a schema change it is dropped and must be re-indexed.
+    val version = query("PRAGMA user_version")(_.getInt(1)).headOption.getOrElse(0)
+    if (version != SchemaVersion) {
+      Using.resource(conn.createStatement()) { st =>
+        Seq("calls", "overrides", "extends", "symbols", "services").foreach(t => st.execute(s"DROP TABLE IF EXISTS $t"))
+        st.execute(s"PRAGMA user_version = $SchemaVersion")
+      }
+    }
     val ddl = Seq(
       "CREATE TABLE IF NOT EXISTS services(name TEXT PRIMARY KEY, root TEXT NOT NULL)",
       """CREATE TABLE IF NOT EXISTS symbols(
         |  symbol TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, owner TEXT NOT NULL,
         |  display TEXT NOT NULL, signature TEXT NOT NULL, service TEXT, file TEXT, line INTEGER,
-        |  abstract INTEGER NOT NULL)""".stripMargin,
+        |  abstract INTEGER NOT NULL, end_line INTEGER)""".stripMargin,
       "CREATE TABLE IF NOT EXISTS extends(child TEXT, parent TEXT, service TEXT, PRIMARY KEY(child, parent))",
       "CREATE TABLE IF NOT EXISTS overrides(method TEXT, overridden TEXT, service TEXT, PRIMARY KEY(method, overridden))",
       """CREATE TABLE IF NOT EXISTS calls(
@@ -301,6 +309,9 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
 
 object GraphStore {
 
+  /** Bump when the schema changes; older databases are dropped and need re-indexing. */
+  val SchemaVersion = 2
+
   def open(path: Path): GraphStore = {
     Option(path.toAbsolutePath.getParent).foreach(Files.createDirectories(_))
     new GraphStore(DriverManager.getConnection(s"jdbc:sqlite:${path.toAbsolutePath}"))
@@ -310,10 +321,10 @@ object GraphStore {
 
   /** Columns read by [[readSymbol]]; queries alias the symbols table as `s`. */
   private val symbolColumns =
-    "s.symbol, s.kind, s.name, s.owner, s.display, s.signature, s.service, s.file, s.line, s.abstract"
+    "s.symbol, s.kind, s.name, s.owner, s.display, s.signature, s.service, s.file, s.line, s.abstract, s.end_line"
 
   private def readSymbol(rs: ResultSet): SymbolNode = {
-    val line = rs.getInt("line")
+    def optInt(col: String): Option[Int] = { val v = rs.getInt(col); if (rs.wasNull()) None else Some(v) }
     SymbolNode(
       symbol = rs.getString("symbol"),
       kind = SymbolKind.fromId(rs.getString("kind")),
@@ -323,8 +334,9 @@ object GraphStore {
       signature = rs.getString("signature"),
       service = Option(rs.getString("service")),
       file = Option(rs.getString("file")),
-      line = if (rs.wasNull()) None else Some(line),
-      isAbstract = rs.getInt("abstract") == 1
+      line = optInt("line"),
+      isAbstract = rs.getInt("abstract") == 1,
+      endLine = optInt("end_line")
     )
   }
 
@@ -339,6 +351,7 @@ object GraphStore {
     s.file.fold(st.setNull(8, java.sql.Types.VARCHAR))(st.setString(8, _))
     s.line.fold(st.setNull(9, java.sql.Types.INTEGER))(st.setInt(9, _))
     st.setInt(10, if (s.isAbstract) 1 else 0)
+    s.endLine.fold(st.setNull(11, java.sql.Types.INTEGER))(st.setInt(11, _))
   }
 
   /** Groups call rows by target, keeping first-seen order. */

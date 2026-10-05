@@ -48,10 +48,14 @@ object Extractor {
       if (parsed.isEmpty) warn(s"[pylon] could not parse ${doc.uri}; calls in this file are attributed to nothing")
       val scopes        = parsed.map(collectScopes(_, definitionAt)).getOrElse(Seq.empty)
       val declaredOnly  = scopes.filter(_.isDeclaration).map(_.symbol).toSet
+      val endLineOf     = scopes.filterNot(_.isInitializer).map(s => s.symbol -> s.endLine).toMap
 
       // Nodes for definitions in this file.
       doc.symbols.filter(_.symbol.isGlobal).foreach { info =>
-        nodeKind(info).foreach { kind =>
+        // Compiler-generated members (case class apply/copy, ...) have no definition in the source:
+        // they are not nodes of the project, so calls to them are treated like library calls.
+        val inSource = definitionLine.contains(info.symbol) || scopes.exists(_.symbol == info.symbol)
+        nodeKind(info).filter(_ => inSource).foreach { kind =>
           val abstractish = info.isAbstract || declaredOnly(info.symbol) || kind == SymbolKind.Trait
           defined(info.symbol) = SymbolNode(
             symbol = info.symbol,
@@ -63,7 +67,8 @@ object Extractor {
             service = Some(service),
             file = Some(doc.uri),
             line = definitionLine.get(info.symbol).orElse(definitionLine.get(info.symbol.owner)),
-            isAbstract = abstractish && kind != SymbolKind.Object
+            isAbstract = abstractish && kind != SymbolKind.Object,
+            endLine = endLineOf.get(info.symbol)
           )
         }
         info.overriddenSymbols.filter(_.isGlobal).foreach(o => overridesE += info.symbol -> o)
@@ -152,7 +157,15 @@ object Extractor {
    * A region of source attributed to `symbol`: a method/val body, or a class/object body
    * (`isInitializer`) whose statements run at construction time.
    */
-  private final case class Scope(symbol: String, start: Int, end: Int, line: Int, isInitializer: Boolean, isDeclaration: Boolean)
+  private final case class Scope(
+      symbol: String,
+      start: Int,
+      end: Int,
+      line: Int,
+      endLine: Int,
+      isInitializer: Boolean,
+      isDeclaration: Boolean
+  )
 
   private val ignoredParents = Set("scala/AnyRef#", "scala/Any#", "java/lang/Object#", "scala/Product#", "scala/Serializable#", "java/io/Serializable#", "scala/Equals#")
 
@@ -169,7 +182,7 @@ object Extractor {
     val out = mutable.ArrayBuffer.empty[Scope]
     def at(name: scala.meta.Tree): Option[String] = definitionAt.get(name.pos.start)
     def add(sym: Option[String], tree: scala.meta.Tree, initializer: Boolean = false, declaration: Boolean = false): Unit =
-      sym.foreach(s => out += Scope(s, tree.pos.start, tree.pos.end, tree.pos.startLine + 1, initializer, declaration))
+      sym.foreach(s => out += Scope(s, tree.pos.start, tree.pos.end, tree.pos.startLine + 1, tree.pos.endLine + 1, initializer, declaration))
     def firstPatName(pats: List[Pat]): Option[String] =
       pats.iterator.flatMap(_.collect { case v: Pat.Var => v.name }).flatMap(at).toSeq.headOption
 

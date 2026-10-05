@@ -9,3 +9,4 @@ node_modules/
 viewer/dist/
 modules/server/src/main/resources/viewer/
 *.log
+viewer/e2e/screenshots/

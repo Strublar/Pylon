@@ -25,6 +25,7 @@ object SymbolKind {
  * @param signature rendered signature, e.g. `(query: Query): List[Hit]`
  * @param service   service that defines it, `None` for external (library) symbols
  * @param isAbstract true for abstract methods and for traits
+ * @param endLine   last line of the definition, when known (methods, vals)
  */
 final case class SymbolNode(
     symbol: String,
@@ -36,9 +37,17 @@ final case class SymbolNode(
     service: Option[String],
     file: Option[String],
     line: Option[Int],
-    isAbstract: Boolean
+    isAbstract: Boolean,
+    endLine: Option[Int] = None
 ) {
   def isExternal: Boolean = service.isEmpty
+
+  /** `ProviderA` for `ProviderA.search`, `ProviderA` for `new ProviderA`. */
+  def ownerDisplay: String =
+    if (kind == SymbolKind.Constructor) display.stripPrefix("new ")
+    else if (display.endsWith(s".$name")) display.dropRight(name.length + 1)
+    else if (kind == SymbolKind.Method || kind == SymbolKind.Value) ""
+    else display
 }
 
 /** `caller` calls `callee` at `file:line`. `synthetic` marks compiler-inserted calls (implicits, for-comprehensions). */
