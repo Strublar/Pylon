@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Minimal sbt runner: uses an installed `sbt` when present, otherwise downloads
+# the sbt launcher jar from Maven Central (no GitHub access needed).
+set -euo pipefail
+
+SBT_LAUNCHER_VERSION="${SBT_LAUNCHER_VERSION:-1.12.15}"
+TOOLS_DIR="${PYLON_TOOLS_DIR:-$HOME/.pylon-tools}"
+LAUNCHER="$TOOLS_DIR/sbt-launch-$SBT_LAUNCHER_VERSION.jar"
+
+if [[ -z "${PYLON_FORCE_LAUNCHER:-}" ]] && command -v sbt >/dev/null 2>&1 \
+   && [[ "$(command -v sbt)" != "$(realpath "$0")" ]]; then
+  exec sbt "$@"
+fi
+
+if [[ ! -f "$LAUNCHER" ]]; then
+  mkdir -p "$TOOLS_DIR"
+  url="https://repo1.maven.org/maven2/org/scala-sbt/sbt-launch/$SBT_LAUNCHER_VERSION/sbt-launch-$SBT_LAUNCHER_VERSION.jar"
+  echo "[pylon] downloading sbt launcher $SBT_LAUNCHER_VERSION" >&2
+  curl -sSfL -o "$LAUNCHER.tmp" "$url"
+  mv "$LAUNCHER.tmp" "$LAUNCHER"
+fi
+
+exec java ${SBT_OPTS:--Xss4m -Xmx2g} -Dsbt.log.noformat=true -jar "$LAUNCHER" "$@"

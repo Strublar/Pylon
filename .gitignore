@@ -1,0 +1,11 @@
+target/
+.bsp/
+.metals/
+.bloop/
+.idea/
+.vscode/
+.pylon/
+node_modules/
+viewer/dist/
+modules/server/src/main/resources/viewer/
+*.log
