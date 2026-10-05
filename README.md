@@ -27,7 +27,7 @@ supported.
 |-------|------|-------|
 | 1 | Indexer (SemanticDB + scalameta), SQLite graph, CLI queries | done |
 | 2 | Web viewer: walk down through forks, walk up to entrypoints | done |
-| 3 | Endpoints: Play routes, Tapir, http4s, ZIO HTTP, Akka/Pekko HTTP | planned |
+| 3 | Endpoints: Play routes, Tapir, http4s, ZIO HTTP, Akka/Pekko HTTP | done |
 | 4 | Cross-service links: gRPC, Tapir shared endpoints, HTTP clients, Kafka | planned |
 | 5 | Narrowing forks using DI wiring (Guice bindings, constructor sites) | planned |
 
@@ -44,9 +44,25 @@ on first use, and again whenever the sources change.
 #    turned on through an injected sbt plugin; no build file is modified.
 bin/pylon index --service search=fixtures/search-3 --service legacy=fixtures/search-213
 
-# 2. Open the interactive map on a method (or an endpoint handler, or a trait)
+# 2. Open the interactive map: on the endpoint list, an endpoint, or a method
+bin/pylon serve                             # landing page lists every HTTP endpoint per service
+bin/pylon map "GET /api/items/{id}"         # parameter names don't matter: "GET /api/items/42" works too
 bin/pylon map ProviderTrait.search          # what does it call?  (--up: who calls it?)
 ```
+
+HTTP endpoints are entrypoints of the graph:
+
+| Framework | Recognised |
+|-----------|------------|
+| Play | `conf/routes` and `conf/*.routes` (`:id`, `*path`, `$id<re>`, `->` includes) → controller action |
+| Tapir | endpoint values (`endpoint`/base endpoints + `.get`, `.in("a" / path[T]("id"))`) where `serverLogic*` is attached |
+| http4s | `case GET -> Root / "a" / LongVar(id) :? Q(q) =>`, mounted with `Router("/api" -> routes)` |
+| ZIO HTTP | `Method.GET / "a" / long("id") -> handler {…}` (3.x), `Http.collect { case Method.GET -> !! / "a" => }` (2.x) |
+| Akka / Pekko HTTP | `pathPrefix`/`path`/`pathEnd` + method directives, `&`, `concat`/`~`, matchers (`Segment`, `LongNumber`, …), routes defined in other `def`s and mounted under a prefix |
+
+The calls made by a route's handler belong to the endpoint, so walking down from `GET /api/search`
+goes straight into the service code, and climbing up from a service method ends at the endpoints
+that reach it.
 
 In the map:
 
@@ -62,7 +78,7 @@ In the map:
   fork already chosen.
 - **Details panel.** Shows the selected method's source, with the lines that call the next step
   highlighted. It also lists implementations and overrides, and *paths from entrypoints*: every
-  call chain from a root (a `main` today; HTTP handlers in phase 3) down to the method.
+  call chain from an entrypoint (an HTTP endpoint, or a method nobody calls such as `main`) down to the method.
 
 The same queries are available as text:
 
@@ -71,6 +87,8 @@ bin/pylon query impls ProviderTrait.search            # implementations
 bin/pylon query callees ProviderA.search              # what it calls (forks listed; --all adds library calls)
 bin/pylon query callers ElasticSearchServiceA.search  # who calls it, incl. through traits
 bin/pylon query paths ElasticSearchServiceA.search    # call chains from entrypoints
+bin/pylon query callees "GET /api/search"             # what an endpoint's handler calls
+bin/pylon endpoints                                   # every endpoint and its handler
 ```
 
 Symbols can be given as `Type.method`, `pkg.Type.method`, `Type#method`, or a raw SemanticDB
@@ -80,11 +98,11 @@ sbt executable used to compile indexed builds.
 ## Development
 
 ```bash
-bin/sbt test                  # store/API unit tests + indexes both fixtures (Scala 2.13 and 3)
+bin/sbt test                  # unit tests + indexes the fixtures (Scala 2.13/3, and fixtures/web: one project per HTTP framework)
 npm --prefix viewer run dev   # viewer with hot reload, proxying the API of `bin/pylon serve`
 
 # Browser end-to-end check (uses Playwright's Chromium) against the fixtures:
-bin/pylon index --service search=fixtures/search-3 --service legacy=fixtures/search-213
+bin/pylon index --service web=fixtures/web --service search=fixtures/search-3 --service legacy=fixtures/search-213
 bin/pylon serve --port 7777 &
 npm --prefix viewer run e2e
 ```

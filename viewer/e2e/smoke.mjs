@@ -88,6 +88,28 @@ await page.locator('.segmented button.on', { hasText: 'Calls' }).waitFor()
 await expectText(page.locator('.breadcrumb'), 'ElasticSearchServiceA', 'opened path')
 await shot('path-as-chain')
 
+// 8. Endpoints: the landing page lists them; start a walk from an http4s route.
+await page.goto(`${base}/`)
+await page.locator('.catalogue-item').first().waitFor()
+await shot('endpoint-catalogue')
+await page.locator('.catalogue-head input').fill('http4s')
+await page.locator('.catalogue-item', { hasText: '/api/search' }).click()
+await expectText(page.locator('.box-step'), '/api/search', 'endpoint box')
+await callee('SearchService').waitFor()
+await expectText(page.locator('.react-flow__edge-text'), 'search ⑂', 'edge from endpoint')
+await settle() // let the camera finish fitting before hovering
+await callee('SearchService').locator('.fork-chip').hover()
+await callee('SearchService').locator('.impl', { hasText: 'ElasticSearchService' }).click()
+await expectText(page.locator('.breadcrumb'), 'ElasticSearchService', 'breadcrumb after fork')
+await shot('endpoint-walk')
+
+// 9. Callers of the implementation climb back to the endpoint, which is an entrypoint.
+await page.locator('.segmented button', { hasText: 'Callers' }).click()
+await expectText(page.locator('.box-callee'), '/api/search', 'endpoint among callers')
+await page.locator('.box-callee', { hasText: '/api/search' }).click()
+await expectText(page.locator('.box-note'), 'Entrypoint: HTTP GET /api/search', 'entrypoint note')
+await shot('callers-to-endpoint')
+
 if (errors.length) throw new Error(`page errors:\n${errors.join('\n')}`)
 await browser.close()
 console.log(`e2e ok — screenshots in ${shots}`)

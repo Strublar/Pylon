@@ -71,20 +71,42 @@ A local server (`pylon map <query>`) serves a JSON API and a React + React Flow 
   the path.
 - **Up mode:** callers (including callers through the trait) and paths to entrypoints.
 
+## Endpoints (phase 3)
+
+An HTTP route is a graph node: `kind = endpoint`, symbol `pylon:endpoint/<service>/<framework>/<VERB> <path>`,
+display `GET /api/items/{id}`. Because it has ordinary `calls` edges, every query works unchanged: an endpoint
+has no callers, so upward walks and entrypoint paths end there.
+
+Indexing runs in three passes over a service:
+
+1. **Parse** every source once (`ParsedFile`: tree + SemanticDB occurrences by offset).
+2. **Find endpoints** (`indexer/endpoints/`). Adapters check that the DSL identifiers resolve, through
+   SemanticDB, into the framework's package (`org/http4s/`, `zio/http/`, `sttp/tapir/`, `akka/http/scaladsl/server/`,
+   `org/apache/pekko/http/scaladsl/server/`), so a `->` or `path` from another library is never mistaken for a route.
+   Each adapter returns `Route`s with a path relative to their *holder* (the def/val that defines them) and `Mount`s:
+   - explicit: `Router("/api" -> routes)`, `pathPrefix("admin") { adminRoutes }`, Play `-> /admin admin.Routes`;
+   - implicit: any other reference to a holder (`a.routes <+> b.routes`, `toRoutes(List(searchLogic))`), counted
+     only when the holder has no explicit mount (so a test referencing routes does not invent a root-level copy).
+   `Mounts.resolve` gives every route its full path(s), cycle-safe and bounded.
+3. **Attribute calls.** Inline handlers (http4s case bodies, ZIO handlers, Akka/Pekko directive bodies, Tapir
+   `serverLogic(...)` expressions) are added as scopes owned by the endpoint; being innermost, they take their calls
+   away from the enclosing `val routes`. Play actions are direct `endpoint → controller method` edges. Play's generated
+   router and Twirl output (under `target/`) are skipped so they never appear as callers.
+
+The Tapir endpoint val is kept on the route (`key`) for phase 4: a client interpreting the same val in another service
+links to it exactly.
+
 ## Later phases
 
-1. **Endpoints.** Adapters map routes to handler methods, which become the roots of upward
-   walks. In order: Play `conf/routes`, Tapir (`endpoint` values and `serverLogic`), http4s
-   (`case GET -> Root / ...`), ZIO HTTP, and Akka/Pekko HTTP directives.
-2. **Cross-service links.**
+1. **Cross-service links.**
    - gRPC: ScalaPB, akka-grpc, fs2-grpc and zio-grpc server implementations are trait
      implementations of the generated service trait, and the client stub calls match exactly.
-   - Tapir: endpoints shared by server and client match exactly.
+   - Tapir: endpoints shared by server and client match exactly (the route `key`).
    - HTTP clients (sttp, http4s client, Play WS, Akka HTTP client): matched by HTTP method and path
      template plus the base-URL config key. These links carry a confidence level, and a
      `pylon.yaml` mapping file can override them.
    - Kafka: a separate `publishes` edge kind.
-3. **Narrowing forks.** Use Guice `bind(...).to(...)` and constructor call sites
+2. **Narrowing forks.** Use Guice `bind(...).to(...)` and constructor call sites
    (`new ProviderA(...)`) to pre-select the implementation that is actually wired.
 
 ## Known limits
@@ -96,3 +118,8 @@ A local server (`pylon map <query>`) serves a JSON API and a React + React Flow 
 - Scala 3 SemanticDB doesn't record for-comprehension desugaring (`flatMap`/`map`). The calls
   inside the comprehension are still recorded.
 - Two services that define the same fully qualified symbol share one node. The last one indexed wins.
+- Route paths are evaluated statically. Segments built at runtime show as `{?}`, and prefixes applied
+  outside the code (reverse proxy, servlet context) are not known.
+- Akka/Pekko: a method directive applied *above* a mounted route definition is not carried into it.
+- SemanticDB plugin versions: Pylon picks the newest `semanticdb-scalac` published for each project's Scala 2
+  version (table in `SbtRunner`); pass `--semanticdb-version` for versions newer than the table.

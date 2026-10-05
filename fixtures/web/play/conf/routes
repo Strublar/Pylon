@@ -1,0 +1,7 @@
+# Search API
+GET     /search                  controllers.SearchController.search(q: String)
+GET     /items/:id               controllers.ItemController.show(id: Long)
+GET     /files/*path             controllers.ItemController.file(path: String)
+GET     /legacy/$id<[0-9]+>      controllers.ItemController.show(id: Long)
+
+->      /admin                   admin.Routes

@@ -2,6 +2,7 @@ import type { PathStep, Site } from './api'
 import { api } from './api'
 import { useAsync } from './hooks'
 import { useState } from 'react'
+import { EndpointLabel } from './Box'
 
 interface Props {
   sym: string
@@ -22,14 +23,16 @@ export function Details(props: Props) {
   if (details.status === 'error') return <aside className="details error">{details.error}</aside>
 
   const { node, implementations, overrides, subtypes } = details.value
-  const isMethod = node.kind === 'method' || node.kind === 'constructor' || node.kind === 'val'
+  const isMethod = node.kind === 'method' || node.kind === 'constructor' || node.kind === 'val' || node.kind === 'endpoint'
   const highlighted = new Set(props.highlight.filter((h) => source.status === 'ready' && source.value?.file === h.file).map((h) => h.line))
 
   return (
     <aside className="details">
-      <div className="details-kind">{node.abstract && node.kind === 'method' ? 'abstract method' : node.kind}</div>
-      <h2 className="details-title">{node.display}</h2>
-      {node.signature && <code className="details-sig">{node.signature}</code>}
+      <div className="details-kind">
+        {node.abstract && node.kind === 'method' ? 'abstract method' : node.kind === 'endpoint' ? `${node.signature} endpoint` : node.kind}
+      </div>
+      <h2 className="details-title">{node.kind === 'endpoint' ? <EndpointLabel display={node.display} /> : node.display}</h2>
+      {node.signature && node.kind !== 'endpoint' && <code className="details-sig">{node.signature}</code>}
       <div className="details-where">
         {node.external ? 'library symbol' : `${node.service} · ${node.file}:${node.line}`}
       </div>
@@ -63,7 +66,7 @@ export function Details(props: Props) {
         </Section>
       )}
 
-      {isMethod && !node.external && (
+      {isMethod && !node.external && node.kind !== 'endpoint' && (
         <Section title="Paths from entrypoints">
           {showPaths === node.symbol ? (
             <Paths sym={node.symbol} onOpen={props.onOpenPath} />

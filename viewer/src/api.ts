@@ -2,7 +2,7 @@
 
 export interface SymbolNode {
   symbol: string
-  kind: 'trait' | 'class' | 'object' | 'method' | 'constructor' | 'val' | 'other'
+  kind: 'trait' | 'class' | 'object' | 'method' | 'constructor' | 'val' | 'endpoint' | 'other'
   name: string
   display: string
   ownerDisplay: string
@@ -78,6 +78,7 @@ async function get<T>(path: string, params: Record<string, string>): Promise<T> 
 
 export const api = {
   search: (q: string) => get<SymbolNode[]>('api/search', { q, limit: '12' }),
+  endpoints: () => get<SymbolNode[]>('api/endpoints', {}),
   node: (sym: string) => get<NodeDetails>('api/node', { sym }),
   callees: (sym: string, external: boolean) => get<Callee[]>('api/callees', { sym, external: external ? '1' : '0' }),
   callers: (sym: string) => get<Caller[]>('api/callers', { sym }),

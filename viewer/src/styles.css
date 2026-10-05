@@ -107,8 +107,31 @@ code { font-family: var(--mono); }
 .main { flex: 1; display: flex; min-height: 0; }
 .canvas { flex: 1; position: relative; min-width: 0; }
 .overlay { position: absolute; top: 16px; left: 16px; z-index: 5; }
-.welcome { max-width: 560px; margin: 12vh auto 0; padding: 0 24px; color: var(--ink-2); }
+.welcome { max-width: 760px; margin: 8vh auto 0; padding: 0 24px 48px; color: var(--ink-2); height: 100%; overflow: auto; box-sizing: border-box; }
 .welcome h1 { color: var(--ink); font-size: 22px; }
+
+/* Endpoints */
+.endpoint { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; }
+.endpoint-path { font-family: var(--mono); font-weight: 600; overflow-wrap: anywhere; }
+.verb { font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--code-bg); color: var(--ink-2); }
+.verb-get { background: var(--impl-soft); color: var(--impl); }
+.verb-post { background: var(--accent-soft); color: var(--accent); }
+.verb-put, .verb-patch { background: var(--fork-soft); color: var(--fork); }
+.verb-delete { background: #fde8e7; color: #c23a31; }
+@media (prefers-color-scheme: dark) { .verb-delete { background: #3d1d1b; color: #f08a82; } }
+.tag-endpoint { background: var(--impl-soft); color: var(--impl); }
+.catalogue { margin-top: 24px; }
+.catalogue-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.catalogue-head h2 { font-size: 15px; color: var(--ink); margin: 0; }
+.catalogue-head input { flex: 0 1 280px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--panel); color: var(--ink); font: inherit; }
+.catalogue-service h3 { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-3); margin: 18px 0 6px; }
+.catalogue-service ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.catalogue-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; text-align: left;
+  padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+}
+.catalogue-item:hover { border-color: var(--accent); }
+.catalogue-fw { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
 
 /* React Flow theming */
 .react-flow { --xy-background-color: var(--bg); --xy-edge-stroke: var(--line-2); --xy-edge-label-background-color: var(--panel); --xy-edge-label-color: var(--ink-2); --xy-controls-button-background-color: var(--panel); --xy-controls-button-color: var(--ink); --xy-controls-button-border-color: var(--line); }
@@ -143,7 +166,7 @@ code { font-family: var(--mono); }
 .member-sig { color: var(--ink-2); }
 .box-via { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
 .box-via b { color: var(--ink-2); font-weight: 600; }
-.box-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 11.5px; color: var(--ink-3); }
+.box-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 6px; font-size: 11.5px; color: var(--ink-3); }
 .box-where { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 6px; border-radius: 4px; background: var(--code-bg); color: var(--ink-3); white-space: nowrap; }

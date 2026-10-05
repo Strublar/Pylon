@@ -83,7 +83,13 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
    * Finds symbols matching a user query: a SemanticDB symbol, `Type.method`, `Type#method`,
    * `pkg.Type.method`, or a bare name. Best matches first; project symbols before external ones.
    */
-  def find(q: String, limit: Int = 20): Seq[SymbolNode] = {
+  def find(q: String, limit: Int = 20): Seq[SymbolNode] =
+    if (GraphStore.looksLikeEndpoint(q)) {
+      val hits = findEndpoint(q)
+      if (hits.nonEmpty) hits.take(limit) else findSymbols(q, limit)
+    } else findSymbols(q, limit)
+
+  private def findSymbols(q: String, limit: Int): Seq[SymbolNode] = {
     val norm   = q.trim.replace('#', '.')
     val parts  = norm.split('.').filter(_.nonEmpty)
     val suffix = parts.takeRight(2).mkString(".")
@@ -118,6 +124,32 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
       s"%${likeEscape(norm)}%",
       limit
     )(readSymbol)
+  }
+
+  /** HTTP endpoints, by service then path. */
+  def endpoints(service: Option[String] = None): Seq[SymbolNode] =
+    query(
+      s"""SELECT $symbolColumns FROM symbols s
+         |WHERE kind = 'endpoint' AND (? = '' OR service = ?)
+         |ORDER BY service, substr(display, instr(display, ' ') + 1), display""".stripMargin,
+      service.getOrElse(""),
+      service.getOrElse("")
+    )(readSymbol)
+
+  /**
+   * Endpoints matching `GET /items/{id}`, `/items/:id`, `GET /items/42`-style queries: parameter
+   * names are ignored, a missing verb matches any verb, and a concrete value matches a parameter.
+   */
+  def findEndpoint(q: String): Seq[SymbolNode] = {
+    val (verb, path) = GraphStore.splitEndpointQuery(q)
+    val wanted       = GraphStore.pathPattern(path)
+    val all          = endpoints()
+    val exact = all.filter { e =>
+      val (v, p) = GraphStore.splitEndpointQuery(e.display)
+      verb.forall(_ == v.getOrElse("")) && GraphStore.pathMatches(GraphStore.pathPattern(p), wanted)
+    }
+    if (exact.nonEmpty) exact
+    else all.filter(e => e.display.toLowerCase.contains(q.trim.toLowerCase))
   }
 
   /** All transitive overriders of `method` (implementations of an abstract method, overrides of a concrete one). */
@@ -353,6 +385,35 @@ object GraphStore {
     st.setInt(10, if (s.isAbstract) 1 else 0)
     s.endLine.fold(st.setNull(11, java.sql.Types.INTEGER))(st.setInt(11, _))
   }
+
+  private val HttpVerbs = Set("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY")
+
+  def looksLikeEndpoint(q: String): Boolean = {
+    val t = q.trim
+    t.startsWith("/") || HttpVerbs.exists(v => t.toUpperCase.startsWith(v + " "))
+  }
+
+  def splitEndpointQuery(q: String): (Option[String], String) = {
+    val t = q.trim
+    t.split("\\s+", 2) match {
+      case Array(v, p) if HttpVerbs(v.toUpperCase) => (Some(v.toUpperCase), p)
+      case _                                       => (None, t)
+    }
+  }
+
+  /** Path segments with parameters (`{id}`, `:id`, `$id<re>`, `*rest`) replaced by `None`. */
+  def pathPattern(path: String): Seq[Option[String]] =
+    path.split('/').toSeq.filter(_.nonEmpty).map { s =>
+      if (s.startsWith("{") || s.startsWith(":") || s.startsWith("$") || s.startsWith("*")) None else Some(s)
+    }
+
+  /** A route pattern matches a query when literals agree; a query literal may fill a route parameter. */
+  def pathMatches(route: Seq[Option[String]], query: Seq[Option[String]]): Boolean =
+    route.size == query.size && route.zip(query).forall {
+      case (Some(a), Some(b)) => a == b
+      case (None, _)          => true
+      case (Some(_), None)    => false
+    }
 
   /** Groups call rows by target, keeping first-seen order. */
   private def groupSites(rows: Seq[(SymbolNode, (String, Int), Boolean)]): Seq[(SymbolNode, Seq[(String, Int)], Boolean)] = {

@@ -40,7 +40,21 @@ export type BoxNode = Node<BoxData, 'box'>
 function where(n: SymbolNode): string {
   if (n.external) return 'library'
   const file = n.file ? n.file.split('/').pop() : ''
-  return `${file}${n.line ? `:${n.line}` : ''}`
+  const loc = `${file}${n.line ? `:${n.line}` : ''}`
+  return n.kind === 'endpoint' ? `${n.signature} · ${loc}` : loc
+}
+
+/** `GET /api/items/{id}` as a verb badge and a path. */
+export function EndpointLabel({ display }: { display: string }) {
+  const space = display.indexOf(' ')
+  const verb = space > 0 ? display.slice(0, space) : 'ANY'
+  const path = space > 0 ? display.slice(space + 1) : display
+  return (
+    <span className="endpoint">
+      <span className={`verb verb-${verb.toLowerCase()}`}>{verb}</span>
+      <span className="endpoint-path">{path}</span>
+    </span>
+  )
 }
 
 function kindLabel(n: SymbolNode): string {
@@ -51,6 +65,12 @@ function kindLabel(n: SymbolNode): string {
 
 /** Title line: the type, or the package for top-level functions. */
 function Title({ node, accent }: { node: SymbolNode; accent?: string }) {
+  if (node.kind === 'endpoint')
+    return (
+      <div className="box-title">
+        <EndpointLabel display={node.display} />
+      </div>
+    )
   const owner = node.kind === 'constructor' ? node.ownerDisplay : node.ownerDisplay || node.display
   return (
     <div className="box-title">
@@ -64,7 +84,7 @@ function Title({ node, accent }: { node: SymbolNode; accent?: string }) {
 
 function Member({ node }: { node: SymbolNode }) {
   if (node.kind === 'constructor') return <div className="box-member">new{node.signature.replace(/:.*$/, '')}</div>
-  if (node.kind === 'trait' || node.kind === 'class' || node.kind === 'object') return null
+  if (node.kind === 'trait' || node.kind === 'class' || node.kind === 'object' || node.kind === 'endpoint') return null
   return (
     <div className="box-member" title={`${node.name}${node.signature}`}>
       <span className="member-name">.{node.name}</span>

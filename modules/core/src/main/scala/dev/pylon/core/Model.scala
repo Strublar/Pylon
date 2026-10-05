@@ -9,9 +9,11 @@ object SymbolKind {
   case object Method      extends SymbolKind("method")
   case object Constructor extends SymbolKind("constructor")
   case object Value       extends SymbolKind("val")
+  /** An HTTP route (Phase 3): `display` is `VERB /path`, `signature` the framework. */
+  case object Endpoint    extends SymbolKind("endpoint")
   case object Other       extends SymbolKind("other")
 
-  val all: Seq[SymbolKind] = Seq(Trait, Class, Object, Method, Constructor, Value, Other)
+  val all: Seq[SymbolKind] = Seq(Trait, Class, Object, Method, Constructor, Value, Endpoint, Other)
   def fromId(id: String): SymbolKind = all.find(_.id == id).getOrElse(Other)
 }
 

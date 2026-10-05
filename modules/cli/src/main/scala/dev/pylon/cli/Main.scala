@@ -18,9 +18,11 @@ object Main {
       |  pylon query [--db PATH] [--all] (find|impls|callees|callers|paths) QUERY
       |  pylon map   [--db PATH] [--port N] [--up] [--no-open] QUERY   open the interactive map on QUERY
       |  pylon serve [--db PATH] [--port N] [--host H] [--static DIR]  serve the viewer without a starting point
+      |  pylon endpoints [--db PATH] [--service S]                  list HTTP endpoints and their handlers
       |  pylon services [--db PATH]
       |
-      |QUERY is a symbol such as ProviderTrait.search, com.acme.ProviderA.search or a SemanticDB symbol.
+      |QUERY is a symbol such as ProviderTrait.search, com.acme.ProviderA.search or a SemanticDB symbol,
+      |or an endpoint such as "GET /api/items/{id}" (parameter names do not matter: "GET /api/items/42" works).
       |`map` opens the browser on the down view ("what does it call?"), or the up view with --up.
       |The graph is stored in .pylon/graph.db unless --db is given. sbt is taken from $PYLON_SBT or the PATH.
       |""".stripMargin
@@ -62,6 +64,8 @@ object Main {
     case "query" :: rest    => query(parseArgs(rest))
     case "map" :: rest      => map(parseArgs(rest))
     case "serve" :: rest    => serve(parseArgs(rest), None)
+    case "dump-semanticdb" :: root :: filter :: _ => dumpSemanticdb(Paths.get(root), filter)
+    case "endpoints" :: rest => endpoints(parseArgs(rest))
     case "services" :: rest => withStore(parseArgs(rest)) { s => s.services.foreach { case (n, r) => println(s"$n\t$r") }; 0 }
     case ("help" | "--help" | "-h") :: _ => println(usage); 0
     case Nil                => println(usage); 0
@@ -166,16 +170,46 @@ object Main {
     }
   }
 
+  private def endpoints(a: Args): Int = withStore(a) { store =>
+    val eps = store.endpoints(a.flags.get("--service").flatMap(_.lastOption))
+    if (eps.isEmpty) Console.err.println("no endpoints in the index")
+    eps.groupBy(_.service.getOrElse("")).toSeq.sortBy(_._1).foreach { case (svc, list) =>
+      println(s"$svc")
+      list.foreach { e =>
+        val handlers = store.callees(e.symbol).filterNot(_.target.isExternal).map(_.target.display).take(3).mkString(", ")
+        println(f"  ${e.display}%-40s ${s"[${e.signature}]"}%-13s -> $handlers%s   ${e.file.getOrElse("")}:${e.line.getOrElse(0)}")
+      }
+    }
+    0
+  }
+
+  /** Debugging aid for adapter development: prints the occurrences of the documents whose uri contains `filter`. */
+  private def dumpSemanticdb(root: Path, filter: String): Int = {
+    dev.pylon.indexer.SemanticdbFiles.load(root.toAbsolutePath.normalize).filter(_.doc.uri.contains(filter)).foreach { d =>
+      println(s"== ${d.doc.uri} (scala3=${d.isScala3})")
+      d.doc.occurrences.sortBy(o => o.range.map(r => (r.startLine, r.startCharacter))).foreach { o =>
+        val r = o.range.get
+        println(f"  ${r.startLine + 1}%4d:${r.startCharacter + 1}%-3d ${if (o.role.isDefinition) "DEF" else "ref"} ${o.symbol}")
+      }
+      d.doc.synthetics.foreach(s => println(s"  synthetic ${s.range.map(r => s"${r.startLine + 1}:${r.startCharacter + 1}").getOrElse("")} ${s.tree}"))
+    }
+    0
+  }
+
   /** Picks the best match, preferring project methods, and says so when the query is ambiguous. */
   def resolve(store: GraphStore, q: String): Option[SymbolNode] = {
     val matches = store.find(q, limit = 5)
     matches.headOption.foreach { best =>
       val others = matches.tail.filter(m => m.display == best.display && m.kind == best.kind)
-      if (others.nonEmpty)
+      if (others.nonEmpty) {
+        val hint =
+          if (best.kind == SymbolKind.Endpoint) s"others: ${others.map(o => s"${o.display} [${o.signature}] = ${o.symbol}").mkString("; ")}"
+          else s"qualify it with its package, e.g. ${others.head.symbol.replace('/', '.').replace('#', '.').stripSuffix("().").stripSuffix(".")}"
         Console.err.println(
           s"note: '$q' matches ${others.size + 1} symbols; using ${best.symbol} (${best.service.getOrElse("external")}). " +
-            s"Qualify it with its package, e.g. ${others.head.symbol.replace('/', '.').replace('#', '.').stripSuffix("().").stripSuffix(".")}"
+            s"To pick another, pass its full symbol; $hint"
         )
+      }
     }
     matches.headOption
   }
@@ -190,7 +224,8 @@ object Format {
       case _                             => ""
     }
     val abs = if (s.isAbstract && s.kind == SymbolKind.Method) "abstract " else ""
-    s"$abs${s.kind.id} ${s.display}${s.signature}$where"
+    if (s.kind == SymbolKind.Endpoint) s"endpoint ${s.display} [${s.signature}]$where"
+    else s"$abs${s.kind.id} ${s.display}${s.signature}$where"
   }
 
   def sites(sites: Seq[(String, Int)]): String = sites.map { case (f, l) => s"$f:$l" }.mkString(", ")

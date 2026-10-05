@@ -74,7 +74,9 @@ export function layout(model: CanvasModel, selected: string | undefined): { node
       if (i > 0) edges.push(edge(`e-chain-${i}`, `chain-${i}`, `chain-${i - 1}`, link ? viaLabel(link.via.name, link.via.display, d) : ''))
     })
     if (model.callers.length === 0) {
-      nodes.push({ id: 'note', type: 'box', position: { x: 0, y: 0 }, data: { variant: 'note', text: 'Nobody calls this: it is an entrypoint.' } })
+      const root = model.chain[n - 1].node
+      const text = root.kind === 'endpoint' ? `Entrypoint: HTTP ${root.display} (${root.signature})` : 'Nobody calls this: it is an entrypoint.'
+      nodes.push({ id: 'note', type: 'box', position: { x: 0, y: 0 }, data: { variant: 'note', text } })
     }
     model.callers.forEach((c, k) => {
       const id = `caller-${k}`

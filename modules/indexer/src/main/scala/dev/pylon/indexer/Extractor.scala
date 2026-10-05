@@ -1,6 +1,7 @@
 package dev.pylon.indexer
 
 import dev.pylon.core._
+import dev.pylon.indexer.endpoints.{Endpoints, ParsedFile}
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import scala.collection.mutable
@@ -18,7 +19,8 @@ import scala.util.control.NonFatal
  */
 object Extractor {
 
-  def extract(service: String, root: Path, docs: Seq[LoadedDocument], warn: String => Unit = Console.err.println): ServiceGraph = {
+  def extract(service: String, root: Path, allDocs: Seq[LoadedDocument], warn: String => Unit = Console.err.println): ServiceGraph = {
+    val docs = allDocs.filterNot(d => isGeneratedPlayCode(d.doc.uri))
     val symtab: Map[String, SymbolInformation] =
       docs.iterator.flatMap(_.doc.symbols).filter(_.symbol.isGlobal).map(i => i.symbol -> i).toMap
 
@@ -27,10 +29,41 @@ object Extractor {
     val overridesE  = mutable.LinkedHashSet.empty[(String, String)]
     val calls       = mutable.ArrayBuffer.empty[CallEdge]
 
-    docs.foreach { loaded =>
+    // Pass A: parse every file once.
+    val parsedFiles: Seq[(LoadedDocument, String, Option[ParsedFile])] = docs.map { loaded =>
       val doc  = loaded.doc
-      val path = root.resolve(doc.uri)
-      val text = if (doc.text.nonEmpty) doc.text else new String(Files.readAllBytes(path), StandardCharsets.UTF_8)
+      val text = if (doc.text.nonEmpty) doc.text else new String(Files.readAllBytes(root.resolve(doc.uri)), StandardCharsets.UTF_8)
+      val parsed = parse(doc.uri, text, loaded.isScala3)
+      if (parsed.isEmpty) warn(s"[pylon] could not parse ${doc.uri}; calls in this file are attributed to nothing")
+      (loaded, text, parsed.map(new ParsedFile(doc.uri, text, _, doc)))
+    }
+
+    // Pass B: HTTP endpoints.
+    val endpoints = Endpoints.find(service, root, parsedFiles.flatMap(_._3), symtab, warn)
+    endpoints.foreach { e =>
+      if (!defined.contains(e.symbol))
+        defined(e.symbol) = SymbolNode(
+          symbol = e.symbol,
+          kind = SymbolKind.Endpoint,
+          name = e.display,
+          owner = "",
+          display = e.display,
+          signature = e.route.framework,
+          service = Some(service),
+          file = Some(e.route.file),
+          line = Some(e.route.line),
+          isAbstract = false,
+          endLine = Some(e.route.endLine)
+        )
+      e.route.targets.foreach(t => calls += CallEdge(e.symbol, t, e.route.file, e.route.line, synthetic = false))
+    }
+    val endpointScopes: Map[String, Seq[Scope]] = endpoints
+      .flatMap(e => e.route.scope.map { case (start, end) => e.route.file -> Scope(e.symbol, start, end, e.route.line, e.route.endLine, isInitializer = false, isDeclaration = false) })
+      .groupMap(_._1)(_._2)
+
+    // Pass C: nodes, hierarchy and calls.
+    parsedFiles.foreach { case (loaded, text, parsedFile) =>
+      val doc  = loaded.doc
       val lineStarts = computeLineStarts(text)
       def offset(r: scala.meta.internal.semanticdb.Range): Int =
         lineStarts(math.min(r.startLine, lineStarts.length - 1)) + r.startCharacter
@@ -44,17 +77,16 @@ object Extractor {
         .map(o => o.symbol -> (o.range.get.startLine + 1))
         .toMap
 
-      val parsed = parse(doc.uri, text, loaded.isScala3)
-      if (parsed.isEmpty) warn(s"[pylon] could not parse ${doc.uri}; calls in this file are attributed to nothing")
-      val scopes        = parsed.map(collectScopes(_, definitionAt)).getOrElse(Seq.empty)
-      val declaredOnly  = scopes.filter(_.isDeclaration).map(_.symbol).toSet
-      val endLineOf     = scopes.filterNot(_.isInitializer).map(s => s.symbol -> s.endLine).toMap
+      val definitionScopes = parsedFile.map(f => collectScopes(f.tree, definitionAt)).getOrElse(Seq.empty)
+      val scopes           = definitionScopes ++ endpointScopes.getOrElse(doc.uri, Nil)
+      val declaredOnly     = definitionScopes.filter(_.isDeclaration).map(_.symbol).toSet
+      val endLineOf        = definitionScopes.filterNot(_.isInitializer).map(s => s.symbol -> s.endLine).toMap
 
       // Nodes for definitions in this file.
       doc.symbols.filter(_.symbol.isGlobal).foreach { info =>
         // Compiler-generated members (case class apply/copy, ...) have no definition in the source:
         // they are not nodes of the project, so calls to them are treated like library calls.
-        val inSource = definitionLine.contains(info.symbol) || scopes.exists(_.symbol == info.symbol)
+        val inSource = definitionLine.contains(info.symbol) || definitionScopes.exists(_.symbol == info.symbol)
         nodeKind(info).filter(_ => inSource).foreach { kind =>
           val abstractish = info.isAbstract || declaredOnly(info.symbol) || kind == SymbolKind.Trait
           defined(info.symbol) = SymbolNode(
@@ -83,7 +115,7 @@ object Extractor {
       }
 
       // Initializer scopes (class bodies) are owned by the primary constructor; make sure it exists as a node.
-      scopes.filter(_.isInitializer).foreach { s =>
+      definitionScopes.filter(_.isInitializer).foreach { s =>
         if (!defined.contains(s.symbol) && Syms.isConstructor(s.symbol))
           defined(s.symbol) = SymbolNode(
             symbol = s.symbol,
@@ -99,8 +131,15 @@ object Extractor {
           )
       }
 
-      def enclosing(off: Int): Option[Scope] =
-        scopes.filter(s => s.start <= off && off < s.end).sortBy(s => (s.end - s.start, -s.start)).headOption
+      /** The innermost scopes containing `off`; several when routes share a handler (mounted twice). */
+      def enclosing(off: Int): Seq[Scope] = {
+        val containing = scopes.filter(s => s.start <= off && off < s.end)
+        if (containing.isEmpty) Nil
+        else {
+          val best = containing.minBy(s => (s.end - s.start, -s.start))
+          containing.filter(s => s.start == best.start && s.end == best.end)
+        }
+      }
 
       def record(sym: String, off: Int, line: Int, synthetic: Boolean): Unit =
         if (Syms.isGlobalMethod(sym) || (synthetic && isImplicitValue(sym, symtab)))
@@ -166,6 +205,15 @@ object Extractor {
       isInitializer: Boolean,
       isDeclaration: Boolean
   )
+
+  /**
+   * Play's generated router and Twirl templates live under `target/`; their calls would make every
+   * controller look called by generated code. Other generated code (ScalaPB, BuildInfo) is kept.
+   */
+  def isGeneratedPlayCode(uri: String): Boolean = {
+    val parts = uri.split('/')
+    parts.contains("target") && (parts.contains("routes") || parts.contains("twirl"))
+  }
 
   private val ignoredParents = Set("scala/AnyRef#", "scala/Any#", "java/lang/Object#", "scala/Product#", "scala/Serializable#", "java/io/Serializable#", "scala/Equals#")
 

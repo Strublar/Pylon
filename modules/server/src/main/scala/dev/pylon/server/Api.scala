@@ -29,6 +29,9 @@ final class Api(store: GraphStore) {
       case "/api/services" =>
         ok(ujson.Arr.from(store.services.map { case (n, r) => ujson.Obj("name" -> n, "root" -> r) }))
 
+      case "/api/endpoints" =>
+        ok(ujson.Arr.from(store.endpoints(params.get("service").filter(_.nonEmpty)).map(Json.node)))
+
       case "/api/search" =>
         val q = params.getOrElse("q", "").trim
         if (q.isEmpty) ok(ujson.Arr())

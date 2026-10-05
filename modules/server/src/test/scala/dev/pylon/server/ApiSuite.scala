@@ -68,6 +68,17 @@ class ApiSuite extends munit.FunSuite {
     assertEquals(api.handle("/api/whatever", Map.empty).status, 404)
   }
 
+  fixture.test("endpoints are listed and found by path") { case (api, store) =>
+    val ep = SymbolNode("pylon:endpoint/svc/http4s/GET /items/{id}", SymbolKind.Endpoint, "GET /items/{id}", "", "GET /items/{id}",
+      "http4s", Some("svc"), Some("src/P.scala"), Some(3), isAbstract = false)
+    store.replaceService(ServiceGraph("svc", "/tmp", Seq(pa, ep), Nil, Nil, Nil,
+      Seq(CallEdge(ep.symbol, pa.symbol, "src/P.scala", 3, synthetic = false))))
+    val list = api.handle("/api/endpoints", Map.empty).body.arr.toSeq
+    assertEquals(list.map(_("display").str), Seq("GET /items/{id}"))
+    assertEquals(api.handle("/api/search", Map("q" -> "GET /items/7")).body.arr.map(_("kind").str).toSeq, Seq("endpoint"))
+    assertEquals(api.handle("/api/callers", Map("sym" -> pa.symbol)).body.arr.map(_("caller")("display").str).toSeq, Seq("GET /items/{id}"))
+  }
+
   test("query parameters are URL-decoded") {
     assertEquals(PylonServer.queryParams("sym=a%2FB%23m%28%29.&mode=up"), Map("sym" -> "a/B#m().", "mode" -> "up"))
   }

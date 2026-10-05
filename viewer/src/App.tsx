@@ -2,7 +2,7 @@ import { ReactFlowProvider } from '@xyflow/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PathStep, Site, SymbolNode } from './api'
 import { api } from './api'
-import { ActionsContext, type Actions } from './Box'
+import { ActionsContext, EndpointLabel, type Actions } from './Box'
 import { Canvas } from './Canvas'
 import { Details } from './Details'
 import { useAsync } from './hooks'
@@ -75,7 +75,7 @@ export function App() {
               role="tab"
               aria-selected={state.mode === 'down'}
               className={state.mode === 'down' ? 'on' : ''}
-              onClick={() => setState((s) => ({ ...s, mode: 'down', down: s.down.length ? s.down : s.up.length ? [{ sym: s.up[0] }] : [] }))}
+              onClick={() => setState((s) => ({ ...s, mode: 'down', down: downFor(s) }))}
             >
               Calls ↓
             </button>
@@ -83,9 +83,7 @@ export function App() {
               role="tab"
               aria-selected={state.mode === 'up'}
               className={state.mode === 'up' ? 'on' : ''}
-              onClick={() =>
-                setState((s) => ({ ...s, mode: 'up', up: s.up.length ? s.up : s.down.length ? [effective(s.down[s.down.length - 1])] : [] }))
-              }
+              onClick={() => setState((s) => ({ ...s, mode: 'up', up: upFor(s) }))}
             >
               Callers ↑
             </button>
@@ -104,7 +102,7 @@ export function App() {
           <div className="canvas">
             {model.status === 'loading' && state.down.length + state.up.length > 0 && <div className="overlay muted">Loading…</div>}
             {model.status === 'error' && <div className="overlay error">{model.error}</div>}
-            {model.status === 'ready' && !ready && <Welcome />}
+            {model.status === 'ready' && !ready && <Welcome onPick={(n) => setState(startAt(n.symbol, 'down'))} />}
             {ready && (
               <ReactFlowProvider>
                 <Canvas model={ready} selected={selected} />
@@ -118,6 +116,20 @@ export function App() {
       </div>
     </ActionsContext.Provider>
   )
+}
+
+/** Calls ↓ continues from what is in focus: keeps the walk if it already goes through it. */
+function downFor(s: ViewState): DownStep[] {
+  const focus = s.selected ?? s.up[s.up.length - 1]
+  if (!focus || s.down.some((step) => effective(step) === focus)) return s.down
+  return [{ sym: focus }]
+}
+
+/** Callers ↑ starts from what is in focus: keeps the climb if it already contains it. */
+function upFor(s: ViewState): string[] {
+  const focus = s.selected ?? (s.down.length ? effective(s.down[s.down.length - 1]) : undefined)
+  if (!focus || s.up.includes(focus)) return s.up
+  return [focus]
 }
 
 /** Converts a root-first entrypoint path into down steps, keeping the implementation chosen at each fork. */
@@ -260,7 +272,7 @@ function Search({ onPick }: { onPick(n: SymbolNode): void }) {
             <li key={n.symbol}>
               <button className={i === active ? 'active' : ''} onMouseEnter={() => setActive(i)} onClick={() => pick(n)}>
                 <span className={`tag tag-${n.abstract ? 'abstract' : n.kind}`}>{n.abstract && n.kind === 'method' ? 'abstract' : n.kind}</span>
-                <span className="result-name">{n.display}</span>
+                <span className="result-name">{n.kind === 'endpoint' ? <EndpointLabel display={n.display} /> : n.display}</span>
                 <span className="result-sig">{n.signature}</span>
                 <span className="result-where">{n.external ? 'library' : n.service}</span>
               </button>
@@ -272,17 +284,52 @@ function Search({ onPick }: { onPick(n: SymbolNode): void }) {
   )
 }
 
-function Welcome() {
+function Welcome({ onPick }: { onPick(n: SymbolNode): void }) {
+  const endpoints = useAsync('endpoints', () => api.endpoints())
+  const [filter, setFilter] = useState('')
+  const list = endpoints.status === 'ready' ? endpoints.value : []
+  const f = filter.trim().toLowerCase()
+  const shown = list.filter((e) => !f || `${e.display} ${e.signature} ${e.service}`.toLowerCase().includes(f))
+  const byService = new Map<string, SymbolNode[]>()
+  shown.forEach((e) => byService.set(e.service ?? '', [...(byService.get(e.service ?? '') ?? []), e]))
+
   return (
     <div className="welcome">
       <h1>Where do you want to start?</h1>
       <p>
-        Search for an endpoint handler, a method or a trait above. In <b>Calls ↓</b> you follow what it calls; at each trait call, pick the
-        implementation to walk into. In <b>Callers ↑</b> you climb back up to the entrypoints.
+        Pick an endpoint below, or search for any method or trait above. In <b>Calls ↓</b> you follow what it calls; at each trait call,
+        pick the implementation to walk into. In <b>Callers ↑</b> you climb back up to the endpoints.
       </p>
-      <p className="muted">
-        Tip: <code>pylon map ProviderTrait.search</code> opens this page directly on a symbol.
-      </p>
+      {list.length > 0 && (
+        <section className="catalogue">
+          <div className="catalogue-head">
+            <h2>Endpoints ({list.length})</h2>
+            <input placeholder="Filter: path, verb, framework…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          </div>
+          {[...byService.entries()].map(([service, eps]) => (
+            <div key={service} className="catalogue-service">
+              <h3>{service}</h3>
+              <ul>
+                {eps.map((e) => (
+                  <li key={e.symbol}>
+                    <button className="catalogue-item" onClick={() => onPick(e)} title={`${e.file}:${e.line}`}>
+                      <EndpointLabel display={e.display} />
+                      <span className="catalogue-fw">{e.signature}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          {shown.length === 0 && <p className="muted">No endpoint matches “{filter}”.</p>}
+        </section>
+      )}
+      {endpoints.status === 'ready' && list.length === 0 && (
+        <p className="muted">
+          No HTTP endpoints were found in the index (Play, Tapir, http4s, ZIO HTTP, Akka/Pekko HTTP are recognised). Tip:{' '}
+          <code>pylon map ProviderTrait.search</code> opens this page directly on a method.
+        </p>
+      )}
     </div>
   )
 }
