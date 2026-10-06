@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package catalog;
+
+service CatalogService {
+  rpc GetItem (GetItemRequest) returns (Item);
+}
+
+message GetItemRequest {
+  int64 id = 1;
+}
+
+message Item {
+  int64 id = 1;
+  string name = 2;
+}
