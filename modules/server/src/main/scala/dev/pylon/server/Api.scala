@@ -32,6 +32,9 @@ final class Api(store: GraphStore) {
       case "/api/endpoints" =>
         ok(ujson.Arr.from(store.endpoints(params.get("service").filter(_.nonEmpty)).map(Json.node)))
 
+      case "/api/links" =>
+        ok(ujson.Arr.from(store.links().map(Json.link)))
+
       case "/api/search" =>
         val q = params.getOrElse("q", "").trim
         if (q.isEmpty) ok(ujson.Arr())
@@ -43,6 +46,7 @@ final class Api(store: GraphStore) {
           ok(
             ujson.Obj(
               "node"            -> Json.node(node),
+              "remote"          -> store.remote(node.symbol).fold[ujson.Value](ujson.Null)(Json.remote),
               "implementations" -> ujson.Arr.from(
                 if (node.kind == SymbolKind.Method) store.implementations(node.symbol).map(Json.node) else Nil
               ),
@@ -124,19 +128,39 @@ object Json {
   private def sites(sites: Seq[(String, Int)]): ujson.Value =
     ujson.Arr.from(sites.map { case (f, l) => ujson.Obj("file" -> f, "line" -> l) })
 
+  def remote(r: Remote): ujson.Value = ujson.Obj(
+    "role"     -> r.role,
+    "protocol" -> r.protocol,
+    "verb"     -> r.verb,
+    "path"     -> r.path,
+    "key"      -> r.key.fold[ujson.Value](ujson.Null)(ujson.Str(_)),
+    "hint"     -> r.hint.fold[ujson.Value](ujson.Null)(ujson.Str(_))
+  )
+
+  def link(l: Link): ujson.Value = ujson.Obj(
+    "client"     -> l.client,
+    "endpoint"   -> l.endpoint,
+    "confidence" -> l.confidence,
+    "reason"     -> l.reason
+  )
+
+  private def optLink(l: Option[Link]): ujson.Value = l.fold[ujson.Value](ujson.Null)(link)
+
   def callee(c: Callee): ujson.Value = ujson.Obj(
     "target"     -> node(c.target),
     "sites"      -> sites(c.sites),
     "synthetic"  -> c.synthetic,
     "fork"       -> c.isFork,
     "candidates" -> ujson.Arr.from(c.candidates.map(node)),
-    "sole"       -> c.soleImplementation.fold[ujson.Value](ujson.Null)(node)
+    "sole"       -> c.soleImplementation.fold[ujson.Value](ujson.Null)(node),
+    "link"       -> optLink(c.link)
   )
 
   def caller(c: Caller): ujson.Value = ujson.Obj(
     "caller" -> node(c.caller),
     "via"    -> node(c.via),
-    "sites"  -> sites(c.sites)
+    "sites"  -> sites(c.sites),
+    "link"   -> optLink(c.link)
   )
 
   def step(s: PathStep): ujson.Value = ujson.Obj(

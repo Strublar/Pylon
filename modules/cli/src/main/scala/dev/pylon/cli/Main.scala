@@ -18,16 +18,27 @@ object Main {
       |  pylon query [--db PATH] [--all] (find|impls|callees|callers|paths) QUERY
       |  pylon map   [--db PATH] [--port N] [--up] [--no-open] QUERY   open the interactive map on QUERY
       |  pylon serve [--db PATH] [--port N] [--host H] [--static DIR]  serve the viewer without a starting point
-      |  pylon endpoints [--db PATH] [--service S]                  list HTTP endpoints and their handlers
+      |  pylon endpoints [--db PATH] [--service S]                  list endpoints (HTTP, gRPC, Kafka) and their handlers
+      |  pylon links [--db PATH] [--service S]                      list calls to other services and what they reach
       |  pylon services [--db PATH]
       |
       |QUERY is a symbol such as ProviderTrait.search, com.acme.ProviderA.search or a SemanticDB symbol,
       |or an endpoint such as "GET /api/items/{id}" (parameter names do not matter: "GET /api/items/42" works).
       |`map` opens the browser on the down view ("what does it call?"), or the up view with --up.
       |The graph is stored in .pylon/graph.db unless --db is given. sbt is taken from $PYLON_SBT or the PATH.
+      |Cross-service links can be steered with pylon.json (or --links FILE):
+      |  {"links": [{"hint": "catalog.url", "service": "catalog"}]}   a client whose base URL mentions the hint calls that service
       |""".stripMargin
 
   def main(args: Array[String]): Unit = {
+    // Arrows and dots in the output: do not depend on the platform's default console charset.
+    System.setOut(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.out), true, StandardCharsets.UTF_8))
+    System.setErr(new java.io.PrintStream(new java.io.FileOutputStream(java.io.FileDescriptor.err), true, StandardCharsets.UTF_8))
+    val code = Console.withOut(System.out)(Console.withErr(System.err)(runSafely(args)))
+    sys.exit(code)
+  }
+
+  private def runSafely(args: Array[String]): Int = {
     val code =
       try run(args.toList)
       catch {
@@ -35,7 +46,7 @@ object Main {
         case e: java.nio.file.NoSuchFileException => Console.err.println(s"error: no such file or directory: ${e.getMessage}"); 1
         case e: Exception                         => Console.err.println(s"error: ${e.getMessage}"); 1
       }
-    sys.exit(code)
+    code
   }
 
   final class UsageError(msg: String) extends RuntimeException(msg)
@@ -45,7 +56,7 @@ object Main {
     def db: Path = Paths.get(flags.get("--db").flatMap(_.lastOption).getOrElse(".pylon/graph.db"))
   }
 
-  private val valueFlags = Set("--db", "--service", "--semanticdb-version", "--port", "--host", "--static")
+  private val valueFlags = Set("--db", "--service", "--semanticdb-version", "--port", "--host", "--static", "--links")
 
   private def parseArgs(args: List[String]): Args = {
     def go(rest: List[String], acc: Args): Args = rest match {
@@ -66,6 +77,7 @@ object Main {
     case "serve" :: rest    => serve(parseArgs(rest), None)
     case "dump-semanticdb" :: root :: filter :: _ => dumpSemanticdb(Paths.get(root), filter)
     case "endpoints" :: rest => endpoints(parseArgs(rest))
+    case "links" :: rest     => links(parseArgs(rest))
     case "services" :: rest => withStore(parseArgs(rest)) { s => s.services.foreach { case (n, r) => println(s"$n\t$r") }; 0 }
     case ("help" | "--help" | "-h") :: _ => println(usage); 0
     case Nil                => println(usage); 0
@@ -84,7 +96,8 @@ object Main {
     if (services.isEmpty) throw new UsageError("index needs at least one --service NAME=PATH")
     val options = Indexer.Options(
       compile = !a.switches("--no-compile"),
-      semanticdbVersion = a.flags.get("--semanticdb-version").flatMap(_.lastOption)
+      semanticdbVersion = a.flags.get("--semanticdb-version").flatMap(_.lastOption),
+      linkRules = linkRules(a)
     )
     withStore(a) { store =>
       services.foreach { case (name, path) => Indexer.index(store, name, path, options) }
@@ -114,13 +127,13 @@ object Main {
                 impls.foreach(s => println(s"  ${Format.symbol(s)}"))
               case "callees" =>
                 store.callees(target.symbol).filter(c => showExternal || !c.target.isExternal).foreach { c =>
-                  println(s"  -> ${Format.callee(c)}")
+                  println(s"  -> ${Format.callee(c)}${Format.link(c.link)}")
                   if (c.isFork) c.candidates.foreach(i => println(s"       | ${Format.symbol(i)}"))
                 }
               case "callers" =>
                 store.callers(target.symbol).foreach { c =>
                   val via = if (c.via.symbol == target.symbol) "" else s"  (via ${c.via.display})"
-                  println(s"  <- ${Format.symbol(c.caller)}$via  @ ${Format.sites(c.sites)}")
+                  println(s"  <- ${Format.symbol(c.caller)}$via  @ ${Format.sites(c.sites)}${Format.link(c.link)}")
                 }
               case "paths" =>
                 store.entrypointPaths(target.symbol).foreach { path =>
@@ -168,6 +181,37 @@ object Main {
       val opener = if (sys.props("os.name").toLowerCase.contains("mac")) "open" else "xdg-open"
       Try(new ProcessBuilder(opener, url).redirectErrorStream(true).start())
     }
+  }
+
+  /** Rules from `--links FILE` or `./pylon.json`: `{"links": [{"hint": "...", "service": "..."}]}`. */
+  private def linkRules(a: Args): Seq[Linker.Rule] = {
+    val file = a.flags.get("--links").flatMap(_.lastOption).map(Paths.get(_)).orElse(Some(Paths.get("pylon.json")).filter(Files.isRegularFile(_)))
+    file.toSeq.flatMap { p =>
+      val json = ujson.read(Files.readString(p))
+      json.obj.get("links").toSeq.flatMap(_.arr).map(r => Linker.Rule(r("hint").str, r("service").str))
+    }
+  }
+
+  private def links(a: Args): Int = withStore(a) { store =>
+    val service = a.flags.get("--service").flatMap(_.lastOption)
+    val byClient = store.links().groupBy(_.client)
+    val clients = store.remotes(Some(Remote.Client)).filter(r => service.forall(_ == r.service))
+    if (clients.isEmpty) Console.err.println("no calls to other services in the index")
+    clients.groupBy(_.service).toSeq.sortBy(_._1).foreach { case (svc, list) =>
+      println(svc)
+      list.sortBy(_.symbol).foreach { r =>
+        val node    = store.symbol(r.symbol)
+        val callers = store.callers(r.symbol).map(_.caller.display).distinct.mkString(", ")
+        println(s"  ${node.map(_.display).getOrElse(r.symbol)}  [${node.map(_.signature).getOrElse("")}]  from $callers  @ ${node.flatMap(_.file).getOrElse("")}:${node.flatMap(_.line).getOrElse(0)}")
+        r.hint.foreach(h => println(s"      base: $h"))
+        byClient.getOrElse(r.symbol, Nil).sortBy(-_.confidence).foreach { l =>
+          val target = store.symbol(l.endpoint)
+          println(f"      => ${target.flatMap(_.service).getOrElse("?")}%-10s ${target.map(_.display).getOrElse(l.endpoint)}  (${l.confidence}%.1f, ${l.reason})")
+        }
+        if (!byClient.contains(r.symbol)) println("      => (no matching endpoint indexed)")
+      }
+    }
+    0
   }
 
   private def endpoints(a: Args): Int = withStore(a) { store =>
@@ -225,8 +269,11 @@ object Format {
     }
     val abs = if (s.isAbstract && s.kind == SymbolKind.Method) "abstract " else ""
     if (s.kind == SymbolKind.Endpoint) s"endpoint ${s.display} [${s.signature}]$where"
+    else if (s.kind == SymbolKind.Client) s"client ${s.display} [${s.signature}]$where"
     else s"$abs${s.kind.id} ${s.display}${s.signature}$where"
   }
+
+  def link(l: Option[Link]): String = l.fold("")(l => f"  (link ${l.confidence}%.1f: ${l.reason})")
 
   def sites(sites: Seq[(String, Int)]): String = sites.map { case (f, l) => s"$f:$l" }.mkString(", ")
 

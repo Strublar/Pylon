@@ -14,11 +14,15 @@ object Tapir {
   val Framework = "tapir"
   private val Pkg = "sttp/tapir/"
 
-  private final case class Shape(verb: Option[String], segments: Seq[String])
+  /** What an endpoint value evaluates to: its method (if set) and path segments. */
+  final case class Shape(verb: Option[String], segments: Seq[String]) {
+    def path: String = segments.mkString("/", "/", "")
+  }
 
   private val LogicPrefixes = Seq("serverLogic", "zServerLogic", "serverSecurityLogic", "zServerSecurityLogic", "handle")
 
-  def scan(files: Seq[ParsedFile]): Found = {
+  /** Static evaluation of endpoint values across a service's files (also used for Tapir clients). */
+  final class Shapes(files: Seq[ParsedFile]) {
     // Right-hand sides of every val, by symbol, to follow `base.get...` and `val idPath = path[Long]("id")`.
     val vals: Map[String, (ParsedFile, Term)] = files.flatMap { f =>
       f.tree.collect {
@@ -82,6 +86,12 @@ object Tapir {
         f.symbols(n).flatMap(vals.get).headOption.toSeq.flatMap { case (vf, rhs) => inputSegments(vf, rhs, visiting) }
       case _ => Nil
     }
+
+  }
+
+  def scan(files: Seq[ParsedFile]): Found = {
+    val shapes0 = new Shapes(files)
+    import shapes0._
 
     /** The endpoint a server-logic call is attached to, descending through chained logic calls. */
     def endpointOf(f: ParsedFile, qual: Term): Option[(Option[String], Shape)] = qual match {

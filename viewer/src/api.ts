@@ -2,7 +2,7 @@
 
 export interface SymbolNode {
   symbol: string
-  kind: 'trait' | 'class' | 'object' | 'method' | 'constructor' | 'val' | 'endpoint' | 'other'
+  kind: 'trait' | 'class' | 'object' | 'method' | 'constructor' | 'val' | 'endpoint' | 'client' | 'other'
   name: string
   display: string
   ownerDisplay: string
@@ -20,6 +20,14 @@ export interface Site {
   line: number
 }
 
+/** A client call site reaching an endpoint, possibly in another service. */
+export interface Link {
+  client: string
+  endpoint: string
+  confidence: number
+  reason: string
+}
+
 export interface Callee {
   target: SymbolNode
   sites: Site[]
@@ -27,16 +35,28 @@ export interface Callee {
   fork: boolean
   candidates: SymbolNode[]
   sole: SymbolNode | null
+  link: Link | null
 }
 
 export interface Caller {
   caller: SymbolNode
   via: SymbolNode
   sites: Site[]
+  link: Link | null
+}
+
+export interface Remote {
+  role: 'server' | 'client'
+  protocol: 'http' | 'grpc' | 'kafka'
+  verb: string
+  path: string
+  key: string | null
+  hint: string | null
 }
 
 export interface NodeDetails {
   node: SymbolNode
+  remote: Remote | null
   implementations: SymbolNode[]
   overrides: SymbolNode[]
   subtypes: SymbolNode[]

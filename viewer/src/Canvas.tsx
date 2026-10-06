@@ -1,6 +1,7 @@
 import { Background, Controls, MarkerType, ReactFlow, useReactFlow, type Edge } from '@xyflow/react'
 import { useEffect, useMemo } from 'react'
-import { Box, type BoxNode } from './Box'
+import { Box, protocolOf, type BoxNode } from './Box'
+import type { Link, SymbolNode } from './api'
 import type { CanvasModel } from './model'
 
 const COL = 480 // horizontal distance between columns (box is 300px; the rest is room for edge labels)
@@ -8,14 +9,20 @@ const ROW = 118 // vertical distance between stacked boxes
 
 const nodeTypes = { box: Box }
 
-function edge(id: string, source: string, target: string, label: string, opts: { dashed?: boolean; muted?: boolean } = {}): Edge {
+function edge(
+  id: string,
+  source: string,
+  target: string,
+  label: string,
+  opts: { dashed?: boolean; muted?: boolean; link?: boolean } = {},
+): Edge {
   return {
     id,
     source,
     target,
     label,
     type: 'default',
-    className: `${opts.dashed ? 'edge-dashed' : ''} ${opts.muted ? 'edge-muted' : ''}`,
+    className: `${opts.dashed ? 'edge-dashed' : ''} ${opts.muted ? 'edge-muted' : ''} ${opts.link ? 'edge-link' : ''}`,
     markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
     labelBgPadding: [6, 3],
     labelBgBorderRadius: 4,
@@ -40,7 +47,11 @@ export function layout(model: CanvasModel, selected: string | undefined): { node
         position: { x: i * COL, y: 0 },
         data: { variant: 'step', model: s, isLast: i === model.steps.length - 1, selected: selected === s.effective.symbol },
       })
-      if (i > 0) edges.push(edge(`e-step-${i}`, `step-${i - 1}`, id, s.called.node.name === '<init>' ? 'new' : s.called.node.name))
+      if (i > 0) {
+        const prev = model.steps[i - 1].effective
+        if (prev.kind === 'client') edges.push(edge(`e-step-${i}`, `step-${i - 1}`, id, protocolOf(prev), { link: true }))
+        else edges.push(edge(`e-step-${i}`, `step-${i - 1}`, id, edgeName(s.called.node)))
+      }
     })
     const last = model.steps[model.steps.length - 1]
     if (!last) return { nodes, edges }
@@ -57,8 +68,9 @@ export function layout(model: CanvasModel, selected: string | undefined): { node
         position: { x: col, y: stack(model.callees.length, k) },
         data: { variant: 'callee', callee: c, selected: selected === c.target.symbol },
       })
-      const label = c.target.name === '<init>' ? 'new' : c.target.name
-      edges.push(edge(`e-${id}`, from, id, c.fork ? `${label} ⑂` : label, { dashed: c.synthetic, muted: c.target.external }))
+      const label = edgeName(c.target)
+      if (c.link) edges.push(edge(`e-${id}`, from, id, linkLabel(last.effective.display, c.link), { link: true, muted: c.link.confidence < 0.85 }))
+      else edges.push(edge(`e-${id}`, from, id, c.fork ? `${label} ⑂` : label, { dashed: c.synthetic, muted: c.target.external }))
     })
   } else {
     const n = model.chain.length
@@ -71,7 +83,10 @@ export function layout(model: CanvasModel, selected: string | undefined): { node
         data: { variant: 'chain', details: d, index: i, isLast: i === n - 1, selected: selected === d.node.symbol },
       })
       const link = model.links[i]
-      if (i > 0) edges.push(edge(`e-chain-${i}`, `chain-${i}`, `chain-${i - 1}`, link ? viaLabel(link.via.name, link.via.display, d) : ''))
+      if (i > 0) {
+        if (link?.link) edges.push(edge(`e-chain-${i}`, `chain-${i}`, `chain-${i - 1}`, linkLabel(link.caller.display, link.link), { link: true }))
+        else edges.push(edge(`e-chain-${i}`, `chain-${i}`, `chain-${i - 1}`, link ? viaLabel(link.via.name, link.via.display, model.chain[i - 1]) : ''))
+      }
     })
     if (model.callers.length === 0) {
       const root = model.chain[n - 1].node
@@ -86,15 +101,28 @@ export function layout(model: CanvasModel, selected: string | undefined): { node
         position: { x: 0, y: stack(model.callers.length, k) },
         data: { variant: 'caller', caller: c, selected: selected === c.caller.symbol },
       })
-      edges.push(edge(`e-${id}`, id, `chain-${n - 1}`, viaLabel(c.via.name, c.via.display, model.chain[n - 1])))
+      if (c.link) edges.push(edge(`e-${id}`, id, `chain-${n - 1}`, linkLabel(c.caller.display, c.link), { link: true, muted: c.link.confidence < 0.85 }))
+      else edges.push(edge(`e-${id}`, id, `chain-${n - 1}`, viaLabel(c.via.name, c.via.display, model.chain[n - 1])))
     })
   }
   return { nodes, edges }
 }
 
+/** Label of a call arrow: the method name; client boxes already say what they call. */
+function edgeName(n: SymbolNode): string {
+  if (n.kind === 'client') return 'calls'
+  return n.name === '<init>' ? 'new' : n.name
+}
+
+/** `HTTP · 0.9` for a link from a client to an endpoint (exact matches show no number). */
+function linkLabel(clientDisplay: string, link: Link): string {
+  const protocol = clientDisplay.replace(/^→\s*/, '').split(' ')[0]
+  return link.confidence >= 1 ? protocol : `${protocol} · ${link.confidence.toFixed(1)}`
+}
+
 /** `search`, or `via ProviderTrait` when the call goes through the method it overrides. */
-function viaLabel(name: string, viaDisplay: string, target: { node: { display: string; name: string } }): string {
-  if (viaDisplay === target.node.display) return name === '<init>' ? 'new' : name
+function viaLabel(name: string, viaDisplay: string, target: { node: SymbolNode }): string {
+  if (viaDisplay === target.node.display) return edgeName(target.node)
   const owner = name === target.node.name && viaDisplay.endsWith(`.${name}`) ? viaDisplay.slice(0, -(name.length + 1)) : viaDisplay
   return `via ${owner}`
 }

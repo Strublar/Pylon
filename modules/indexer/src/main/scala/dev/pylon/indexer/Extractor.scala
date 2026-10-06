@@ -1,7 +1,8 @@
 package dev.pylon.indexer
 
 import dev.pylon.core._
-import dev.pylon.indexer.endpoints.{Endpoints, ParsedFile}
+import dev.pylon.indexer.endpoints.{Endpoints, ParsedFile, Tapir}
+import dev.pylon.indexer.remote._
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import scala.collection.mutable
@@ -60,6 +61,44 @@ object Extractor {
     val endpointScopes: Map[String, Seq[Scope]] = endpoints
       .flatMap(e => e.route.scope.map { case (start, end) => e.route.file -> Scope(e.symbol, start, end, e.route.line, e.route.endLine, isInitializer = false, isDeclaration = false) })
       .groupMap(_._1)(_._2)
+    val remotes = mutable.LinkedHashMap.empty[String, Remote]
+    endpoints.foreach(e => remotes(e.symbol) = Remote(e.symbol, service, Remote.Server, "http", e.verb, e.path, e.route.key))
+
+    // Pass B': other services this one talks to (HTTP clients, Kafka) and gRPC/Kafka endpoints it serves.
+    val sourceFiles = parsedFiles.flatMap(_._3)
+    val grpc        = new Grpc(docs.map(_.doc), symtab)
+    val vals        = new UrlTemplate.Vals(sourceFiles)
+    val tapirShapes = new Tapir.Shapes(sourceFiles)
+    val sites = sourceFiles.filterNot(f => grpc.generatedFiles(f.uri)).foldLeft(RemoteSites()) { (acc, f) =>
+      try acc ++ RemoteSites(HttpClients.scan(f, vals, tapirShapes)) ++ Kafka.scan(f, vals)
+      catch { case NonFatal(e) => warn(s"[pylon] remote-call detection failed on ${f.uri}: $e"); acc }
+    }
+    val definitionSites: Map[String, (String, Int)] = docs.iterator.flatMap { d =>
+      d.doc.occurrences.iterator.filter(o => o.role.isDefinition && o.range.isDefined).map(o => o.symbol -> (d.doc.uri, o.range.get.startLine + 1))
+    }.toMap
+    val grpcServers = grpc.implementations(symtab.keys).groupMap(_._2)(_._1).toSeq.sortBy(_._1).map { case (key, impls) =>
+      val (file, line) = impls.flatMap(definitionSites.get).headOption.getOrElse(("", 0))
+      ServerSite("grpc", "GRPC", key, Some(key), "grpc", file, line, line, impls.sorted)
+    }
+    (sites.servers ++ grpcServers).foreach { site =>
+      val sym = s"pylon:endpoint/$service/${site.protocol}/${site.display}"
+      if (!defined.contains(sym))
+        defined(sym) = SymbolNode(sym, SymbolKind.Endpoint, site.display, "", site.display, site.library, Some(service),
+          Some(site.file), Some(site.line), isAbstract = false, endLine = Some(site.endLine))
+      remotes.getOrElseUpdate(sym, Remote(sym, service, Remote.Server, site.protocol, site.verb, site.path, site.key))
+      site.targets.foreach(t => calls += CallEdge(sym, t, site.file, site.line, synthetic = false))
+    }
+
+    /** A client node for an outbound call site, called by `callers`. */
+    def addClient(site: ClientSite, callers: Seq[String]): Unit = {
+      val sym = s"pylon:client/$service/${site.protocol}/${site.file}:${site.line}:${site.offset}"
+      if (!defined.contains(sym))
+        defined(sym) = SymbolNode(sym, SymbolKind.Client, site.label, "", site.label, site.library, Some(service),
+          Some(site.file), Some(site.line), isAbstract = false, endLine = Some(site.line))
+      remotes.getOrElseUpdate(sym, Remote(sym, service, Remote.Client, site.protocol, site.verb, site.path, site.key, site.hint))
+      callers.foreach(c => calls += CallEdge(c, sym, site.file, site.line, synthetic = false))
+    }
+    val clientSitesByFile = sites.clients.groupBy(_.file)
 
     // Pass C: nodes, hierarchy and calls.
     parsedFiles.foreach { case (loaded, text, parsedFile) =>
@@ -142,20 +181,30 @@ object Extractor {
       }
 
       def record(sym: String, off: Int, line: Int, synthetic: Boolean): Unit =
-        if (Syms.isGlobalMethod(sym) || (synthetic && isImplicitValue(sym, symtab)))
-          enclosing(off).filterNot(_.symbol == sym).foreach { scope =>
-            calls += CallEdge(scope.symbol, sym, doc.uri, line, synthetic)
+        if (Syms.isGlobalMethod(sym) || (synthetic && isImplicitValue(sym, symtab))) {
+          val callers = enclosing(off).filterNot(_.symbol == sym).map(_.symbol)
+          grpc.clientKey(sym) match {
+            // A call to a generated gRPC stub is a remote call: a client node replaces the stub.
+            case Some(key) if !synthetic =>
+              addClient(ClientSite("grpc", "GRPC", key, Some(key), None, "grpc", doc.uri, line, off, replaces = Some(sym)), callers)
+            case _ => callers.foreach(c => calls += CallEdge(c, sym, doc.uri, line, synthetic))
           }
-
-      doc.occurrences.foreach { o =>
-        if (o.role.isReference && o.range.isDefined) {
-          val r = o.range.get
-          record(o.symbol, offset(r), r.startLine + 1, synthetic = false)
         }
-      }
-      doc.synthetics.foreach { s =>
-        s.range.foreach { r =>
-          syntheticSymbols(s.tree).distinct.foreach(sym => record(sym, offset(r), r.startLine + 1, synthetic = true))
+
+      // Generated gRPC glue (bindService, stubs) is never shown as a caller.
+      if (!grpc.generatedFiles(doc.uri)) {
+        clientSitesByFile.getOrElse(doc.uri, Nil).foreach(site => addClient(site, enclosing(site.offset).map(_.symbol)))
+
+        doc.occurrences.foreach { o =>
+          if (o.role.isReference && o.range.isDefined) {
+            val r = o.range.get
+            record(o.symbol, offset(r), r.startLine + 1, synthetic = false)
+          }
+        }
+        doc.synthetics.foreach { s =>
+          s.range.foreach { r =>
+            syntheticSymbols(s.tree).distinct.foreach(sym => record(sym, offset(r), r.startLine + 1, synthetic = true))
+          }
         }
       }
     }
@@ -186,7 +235,8 @@ object Extractor {
       externals = externals,
       extendsEdges = extendsE.toSeq,
       overrides = overridesE.toSeq,
-      calls = dedupCalls
+      calls = dedupCalls,
+      remotes = remotes.values.toSeq
     )
   }
 

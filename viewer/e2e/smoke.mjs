@@ -110,6 +110,28 @@ await page.locator('.box-callee', { hasText: '/api/search' }).click()
 await expectText(page.locator('.box-note'), 'Entrypoint: HTTP GET /api/search', 'entrypoint note')
 await shot('callers-to-endpoint')
 
+// 10. Across services: gateway endpoint -> client method -> gRPC call -> catalog endpoint -> implementation.
+const box = (text) => page.locator('.box-callee', { hasText: text }).first()
+await page.goto(`${base}/`)
+await page.locator('.catalogue-head input').fill('checkout')
+await page.locator('.catalogue-item', { hasText: '/checkout/' }).click()
+await box('itemViaGrpc').click()
+await box('→ gRPC').click()
+await expectText(page.locator('.react-flow__edge-text'), 'gRPC', 'link edge label')
+await expectText(page.locator('.box-callee'), 'catalog.CatalogService/getItem', 'catalog gRPC endpoint')
+await shot('cross-service-down')
+await box('catalog.CatalogService/getItem').click()
+await box('CatalogServiceImpl').waitFor()
+await expectText(page.locator('.breadcrumb'), 'GRPC catalog.CatalogService/getItem', 'breadcrumb across services')
+
+// 11. Up from the catalog endpoint: the gateway's HTTP clients call it, with match confidence.
+await page.goto(`${base}/?sym=${encodeURIComponent('pylon:endpoint/catalog/http4s/GET /catalog/items/{id}')}&mode=up`)
+await expectText(page.locator('.box-callee'), '→ HTTP', 'clients among callers')
+await expectText(page.locator('.react-flow__edge-text'), 'HTTP · 0.9', 'confidence on link edge')
+await page.locator('.box-callee', { hasText: 'sttp' }).first().click()
+await expectText(page.locator('.box-callee'), 'itemViaSttp', 'gateway method calling the client')
+await shot('cross-service-up')
+
 if (errors.length) throw new Error(`page errors:\n${errors.join('\n')}`)
 await browser.close()
 console.log(`e2e ok — screenshots in ${shots}`)

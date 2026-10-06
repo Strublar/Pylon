@@ -54,12 +54,32 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
         st.setString(1, c.caller); st.setString(2, c.callee); st.setString(3, c.file)
         st.setInt(4, c.line); st.setInt(5, if (c.synthetic) 1 else 0); st.setString(6, graph.service)
     }
+    batch(
+      "INSERT OR REPLACE INTO remotes(symbol, service, role, protocol, verb, path, key, hint) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      graph.remotes
+    ) { (st, r) =>
+      st.setString(1, r.symbol); st.setString(2, graph.service); st.setString(3, r.role); st.setString(4, r.protocol)
+      st.setString(5, r.verb); st.setString(6, r.path)
+      r.key.fold(st.setNull(7, java.sql.Types.VARCHAR))(st.setString(7, _))
+      r.hint.fold(st.setNull(8, java.sql.Types.VARCHAR))(st.setString(8, _))
+    }
+  }
+
+  /** Recomputes every cross-service link from the indexed clients and endpoints (see [[Linker]]). */
+  def relink(rules: Seq[Linker.Rule] = Nil): Seq[Link] = transaction {
+    val links = Linker.link(remotes(), services.map(_._1), rules)
+    exec("DELETE FROM links")
+    batch("INSERT OR REPLACE INTO links(client, endpoint, confidence, reason) VALUES (?, ?, ?, ?)", links) { (st, l) =>
+      st.setString(1, l.client); st.setString(2, l.endpoint); st.setDouble(3, l.confidence); st.setString(4, l.reason)
+    }
+    links
   }
 
   private def deleteService(service: String): Unit = {
     exec("DELETE FROM calls WHERE service = ?", service)
     exec("DELETE FROM extends WHERE service = ?", service)
     exec("DELETE FROM overrides WHERE service = ?", service)
+    exec("DELETE FROM remotes WHERE service = ?", service)
     // Symbols still referenced by other services become external again instead of disappearing.
     exec(
       """UPDATE symbols SET service = NULL, file = NULL, line = NULL, end_line = NULL
@@ -72,6 +92,35 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
 
   // ---------------------------------------------------------------------------
   // Reads
+
+  /** Clients and endpoints with their linking metadata. */
+  def remotes(role: Option[String] = None): Seq[Remote] =
+    query(
+      "SELECT symbol, service, role, protocol, verb, path, key, hint FROM remotes WHERE (? = '' OR role = ?) ORDER BY service, path",
+      role.getOrElse(""),
+      role.getOrElse("")
+    )(rs =>
+      Remote(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6),
+        Option(rs.getString(7)), Option(rs.getString(8)))
+    )
+
+  def remote(symbol: String): Option[Remote] = remotes().find(_.symbol == symbol)
+
+  /** Current links, best first. */
+  def links(): Seq[Link] =
+    query("SELECT client, endpoint, confidence, reason FROM links ORDER BY client, confidence DESC")(rs =>
+      Link(rs.getString(1), rs.getString(2), rs.getDouble(3), rs.getString(4))
+    )
+
+  private def linksFrom(client: String): Seq[Link] =
+    query("SELECT client, endpoint, confidence, reason FROM links WHERE client = ? ORDER BY confidence DESC, endpoint", client)(rs =>
+      Link(rs.getString(1), rs.getString(2), rs.getDouble(3), rs.getString(4))
+    )
+
+  private def linksTo(endpoint: String): Seq[Link] =
+    query("SELECT client, endpoint, confidence, reason FROM links WHERE endpoint = ? ORDER BY confidence DESC, client", endpoint)(rs =>
+      Link(rs.getString(1), rs.getString(2), rs.getDouble(3), rs.getString(4))
+    )
 
   def services: Seq[(String, String)] =
     query("SELECT name, root FROM services ORDER BY name")(rs => rs.getString(1) -> rs.getString(2))
@@ -209,10 +258,13 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
          |ORDER BY c.file, c.line""".stripMargin,
       method
     )(rs => (readSymbol(rs), rs.getString("call_file"), rs.getInt("call_line"), rs.getInt("synthetic") == 1))
-    groupSites(rows.map { case (s, f, l, syn) => (s, (f, l), syn) }).map { case (target, sites, synthetic) =>
+    val direct = groupSites(rows.map { case (s, f, l, syn) => (s, (f, l), syn) }).map { case (target, sites, synthetic) =>
       val candidates = if (target.kind == SymbolKind.Method) implementations(target.symbol) else Nil
       Callee(target, sites, synthetic, candidates)
     }
+    // A client call site continues into the endpoints it is linked to (other services).
+    val remote = linksFrom(method).flatMap(l => symbol(l.endpoint).map(e => Callee(e, Nil, synthetic = false, Nil, Some(l))))
+    direct ++ remote
   }
 
   /**
@@ -237,8 +289,17 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
         val (caller, via, _) = group.head
         viaBySymbol.get(via).map(v => Caller(caller, v, group.map(_._3).distinct))
       }
-      .sortBy(c => (c.caller.display, c.via.display))
+      .sortBy(c => (c.caller.display, c.via.display)) ++ linkedCallers(method)
   }
+
+  /** Client call sites (other services) linked to an endpoint. */
+  private def linkedCallers(endpoint: String): Seq[Caller] =
+    linksTo(endpoint).flatMap { l =>
+      for {
+        client <- symbol(l.client)
+        target <- symbol(endpoint)
+      } yield Caller(client, target, client.file.zip(client.line).toSeq, Some(l))
+    }
 
   /**
    * Paths from roots (methods nobody calls, e.g. `main` or, later, HTTP handlers) down to `method`.
@@ -277,7 +338,7 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
     val version = query("PRAGMA user_version")(_.getInt(1)).headOption.getOrElse(0)
     if (version != SchemaVersion) {
       Using.resource(conn.createStatement()) { st =>
-        Seq("calls", "overrides", "extends", "symbols", "services").foreach(t => st.execute(s"DROP TABLE IF EXISTS $t"))
+        Seq("calls", "overrides", "extends", "symbols", "services", "remotes", "links").foreach(t => st.execute(s"DROP TABLE IF EXISTS $t"))
         st.execute(s"PRAGMA user_version = $SchemaVersion")
       }
     }
@@ -292,6 +353,13 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
       """CREATE TABLE IF NOT EXISTS calls(
         |  caller TEXT NOT NULL, callee TEXT NOT NULL, file TEXT NOT NULL, line INTEGER NOT NULL,
         |  synthetic INTEGER NOT NULL, service TEXT NOT NULL)""".stripMargin,
+      """CREATE TABLE IF NOT EXISTS remotes(
+        |  symbol TEXT PRIMARY KEY, service TEXT NOT NULL, role TEXT NOT NULL, protocol TEXT NOT NULL,
+        |  verb TEXT NOT NULL, path TEXT NOT NULL, key TEXT, hint TEXT)""".stripMargin,
+      """CREATE TABLE IF NOT EXISTS links(
+        |  client TEXT NOT NULL, endpoint TEXT NOT NULL, confidence REAL NOT NULL, reason TEXT NOT NULL,
+        |  PRIMARY KEY(client, endpoint))""".stripMargin,
+      "CREATE INDEX IF NOT EXISTS links_endpoint ON links(endpoint)",
       "CREATE INDEX IF NOT EXISTS calls_caller ON calls(caller)",
       "CREATE INDEX IF NOT EXISTS calls_callee ON calls(callee)",
       "CREATE INDEX IF NOT EXISTS overrides_overridden ON overrides(overridden)",
@@ -342,7 +410,7 @@ final class GraphStore private (conn: Connection) extends AutoCloseable {
 object GraphStore {
 
   /** Bump when the schema changes; older databases are dropped and need re-indexing. */
-  val SchemaVersion = 2
+  val SchemaVersion = 3
 
   def open(path: Path): GraphStore = {
     Option(path.toAbsolutePath.getParent).foreach(Files.createDirectories(_))
@@ -386,7 +454,7 @@ object GraphStore {
     s.endLine.fold(st.setNull(11, java.sql.Types.INTEGER))(st.setInt(11, _))
   }
 
-  private val HttpVerbs = Set("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY")
+  private val HttpVerbs = Set("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY", "GRPC", "CONSUME")
 
   def looksLikeEndpoint(q: String): Boolean = {
     val t = q.trim

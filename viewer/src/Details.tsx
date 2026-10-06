@@ -2,7 +2,7 @@ import type { PathStep, Site } from './api'
 import { api } from './api'
 import { useAsync } from './hooks'
 import { useState } from 'react'
-import { EndpointLabel } from './Box'
+import { ClientLabel, EndpointLabel } from './Box'
 
 interface Props {
   sym: string
@@ -23,16 +23,22 @@ export function Details(props: Props) {
   if (details.status === 'error') return <aside className="details error">{details.error}</aside>
 
   const { node, implementations, overrides, subtypes } = details.value
-  const isMethod = node.kind === 'method' || node.kind === 'constructor' || node.kind === 'val' || node.kind === 'endpoint'
+  const isMethod = ['method', 'constructor', 'val', 'endpoint', 'client'].includes(node.kind)
   const highlighted = new Set(props.highlight.filter((h) => source.status === 'ready' && source.value?.file === h.file).map((h) => h.line))
 
   return (
     <aside className="details">
       <div className="details-kind">
-        {node.abstract && node.kind === 'method' ? 'abstract method' : node.kind === 'endpoint' ? `${node.signature} endpoint` : node.kind}
+        {node.abstract && node.kind === 'method'
+          ? 'abstract method'
+          : node.kind === 'endpoint' || node.kind === 'client'
+            ? `${node.signature} ${node.kind === 'client' ? 'call to another service' : 'endpoint'}`
+            : node.kind}
       </div>
-      <h2 className="details-title">{node.kind === 'endpoint' ? <EndpointLabel display={node.display} /> : node.display}</h2>
-      {node.signature && node.kind !== 'endpoint' && <code className="details-sig">{node.signature}</code>}
+      <h2 className="details-title">
+        {node.kind === 'endpoint' ? <EndpointLabel display={node.display} /> : node.kind === 'client' ? <ClientLabel node={node} /> : node.display}
+      </h2>
+      {node.signature && node.kind !== 'endpoint' && node.kind !== 'client' && <code className="details-sig">{node.signature}</code>}
       <div className="details-where">
         {node.external ? 'library symbol' : `${node.service} · ${node.file}:${node.line}`}
       </div>
@@ -43,6 +49,13 @@ export function Details(props: Props) {
           <button onClick={() => props.onWalkUp(node.symbol)}>Who calls it? ↑</button>
         </div>
       )}
+
+      {details.value.remote?.hint && (
+        <Section title="Base URL / config">
+          <code className="details-sig">{details.value.remote.hint}</code>
+        </Section>
+      )}
+      {node.kind === 'client' && <Reaches sym={node.symbol} onSelect={props.onSelect} />}
 
       {overrides.length > 0 && (
         <Section title="Implements / overrides">
@@ -112,6 +125,27 @@ function SymLink(props: { label: string; onClick(): void }) {
     <button className="sym-link" onClick={props.onClick}>
       {props.label}
     </button>
+  )
+}
+
+/** Endpoints a client call site is linked to, with how sure the match is. */
+function Reaches(props: { sym: string; onSelect(sym: string): void }) {
+  const callees = useAsync(`reach|${props.sym}`, () => api.callees(props.sym, false))
+  if (callees.status !== 'ready') return null
+  const links = callees.value.filter((c) => c.link)
+  return (
+    <Section title="Reaches">
+      {links.length === 0 && <div className="muted">No matching endpoint in the indexed services.</div>}
+      {links.map((c) => (
+        <button key={c.target.symbol} className="reach" onClick={() => props.onSelect(c.target.symbol)}>
+          <span className="service-tag">{c.target.service}</span>
+          <EndpointLabel display={c.target.display} />
+          <span className="reach-why">
+            {c.link!.confidence >= 1 ? 'exact' : c.link!.confidence.toFixed(1)} · {c.link!.reason}
+          </span>
+        </button>
+      ))}
+    </Section>
   )
 }
 

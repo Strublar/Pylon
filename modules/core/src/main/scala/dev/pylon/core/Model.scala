@@ -11,9 +11,11 @@ object SymbolKind {
   case object Value       extends SymbolKind("val")
   /** An HTTP route (Phase 3): `display` is `VERB /path`, `signature` the framework. */
   case object Endpoint    extends SymbolKind("endpoint")
+  /** An outbound call to another service (Phase 4): `display` is `→ HTTP GET /items/{}`, `signature` the client library. */
+  case object Client      extends SymbolKind("client")
   case object Other       extends SymbolKind("other")
 
-  val all: Seq[SymbolKind] = Seq(Trait, Class, Object, Method, Constructor, Value, Endpoint, Other)
+  val all: Seq[SymbolKind] = Seq(Trait, Class, Object, Method, Constructor, Value, Endpoint, Client, Other)
   def fromId(id: String): SymbolKind = all.find(_.id == id).getOrElse(Other)
 }
 
@@ -61,6 +63,37 @@ final case class CallEdge(
     synthetic: Boolean
 )
 
+/**
+ * What an endpoint serves or a client calls, for cross-service linking.
+ *
+ * @param role     `server` (an endpoint node) or `client` (a client node)
+ * @param protocol `http`, `grpc` or `kafka`
+ * @param verb     HTTP method, `GRPC`, `PUBLISH` or `CONSUME`
+ * @param path     HTTP path template (`/items/{id}`, `{}` for unknown pieces), gRPC method or topic
+ * @param key      exact identity shared by both sides when known: Tapir endpoint val, `pkg.Service/method`, topic
+ * @param hint     source text of the base URL / config key a client uses (`config.getString("catalog.url")`)
+ */
+final case class Remote(
+    symbol: String,
+    service: String,
+    role: String,
+    protocol: String,
+    verb: String,
+    path: String,
+    key: Option[String] = None,
+    hint: Option[String] = None
+) {
+  def isClient: Boolean = role == Remote.Client
+}
+
+object Remote {
+  val Server = "server"
+  val Client = "client"
+}
+
+/** A client call site reaching an endpoint, possibly in another service. */
+final case class Link(client: String, endpoint: String, confidence: Double, reason: String)
+
 /** Everything extracted from one service. */
 final case class ServiceGraph(
     service: String,
@@ -69,7 +102,8 @@ final case class ServiceGraph(
     externals: Seq[SymbolNode],
     extendsEdges: Seq[(String, String)],
     overrides: Seq[(String, String)],
-    calls: Seq[CallEdge]
+    calls: Seq[CallEdge],
+    remotes: Seq[Remote] = Nil
 )
 
 /** A callee of a method, grouped over all its call sites. */
@@ -77,7 +111,8 @@ final case class Callee(
     target: SymbolNode,
     sites: Seq[(String, Int)],
     synthetic: Boolean,
-    candidates: Seq[SymbolNode]
+    candidates: Seq[SymbolNode],
+    link: Option[Link] = None
 ) {
 
   /** True when the runtime target must be chosen among several implementations. */
@@ -92,7 +127,8 @@ final case class Callee(
 final case class Caller(
     caller: SymbolNode,
     via: SymbolNode,
-    sites: Seq[(String, Int)]
+    sites: Seq[(String, Int)],
+    link: Option[Link] = None
 )
 
 /** One step of a path towards an entrypoint: `node` is reached by calling `via`. */

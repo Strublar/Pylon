@@ -79,6 +79,20 @@ class ApiSuite extends munit.FunSuite {
     assertEquals(api.handle("/api/callers", Map("sym" -> pa.symbol)).body.arr.map(_("caller")("display").str).toSeq, Seq("GET /items/{id}"))
   }
 
+  fixture.test("links are exposed on callees and callers") { case (api, store) =>
+    val ep = SymbolNode("e", SymbolKind.Endpoint, "GET /items/{id}", "", "GET /items/{id}", "http4s", Some("other"), Some("x"), Some(1), isAbstract = false)
+    val cl = SymbolNode("c", SymbolKind.Client, "→ HTTP GET /items/{}", "", "→ HTTP GET /items/{}", "sttp", Some("svc2"), Some("y"), Some(2), isAbstract = false)
+    store.replaceService(ServiceGraph("other", "/o", Seq(ep), Nil, Nil, Nil, Nil, Seq(Remote("e", "other", Remote.Server, "http", "GET", "/items/{id}"))))
+    store.replaceService(ServiceGraph("svc2", "/s", Seq(cl), Nil, Nil, Nil, Nil, Seq(Remote("c", "svc2", Remote.Client, "http", "GET", "/items/{}"))))
+    store.relink()
+    val Seq(c) = api.handle("/api/callees", Map("sym" -> "c")).body.arr.toSeq
+    assertEquals(c("target")("display").str, "GET /items/{id}")
+    assertEquals(c("link")("confidence").num, 0.8)
+    val Seq(back) = api.handle("/api/callers", Map("sym" -> "e")).body.arr.toSeq
+    assertEquals(back("caller")("display").str, "→ HTTP GET /items/{}")
+    assertEquals(api.handle("/api/links", Map.empty).body.arr.size, 1)
+  }
+
   test("query parameters are URL-decoded") {
     assertEquals(PylonServer.queryParams("sym=a%2FB%23m%28%29.&mode=up"), Map("sym" -> "a/B#m().", "mode" -> "up"))
   }

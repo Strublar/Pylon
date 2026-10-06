@@ -41,7 +41,24 @@ function where(n: SymbolNode): string {
   if (n.external) return 'library'
   const file = n.file ? n.file.split('/').pop() : ''
   const loc = `${file}${n.line ? `:${n.line}` : ''}`
-  return n.kind === 'endpoint' ? `${n.signature} · ${loc}` : loc
+  return n.kind === 'endpoint' || n.kind === 'client' ? `${n.signature} · ${loc}` : loc
+}
+
+/** `HTTP`, `gRPC` or `Kafka` from a client's display (`→ HTTP GET /items/{}`). */
+export function protocolOf(n: SymbolNode): string {
+  return n.display.replace(/^→\s*/, '').split(' ')[0] ?? ''
+}
+
+/** `→ HTTP GET /items/{}` as a protocol badge and the call. */
+export function ClientLabel({ node }: { node: SymbolNode }) {
+  const rest = node.display.replace(/^→\s*/, '')
+  const protocol = rest.split(' ')[0]
+  return (
+    <span className="endpoint">
+      <span className={`proto proto-${protocol.toLowerCase()}`}>→ {protocol}</span>
+      <span className="endpoint-path">{rest.slice(protocol.length + 1)}</span>
+    </span>
+  )
 }
 
 /** `GET /api/items/{id}` as a verb badge and a path. */
@@ -65,10 +82,11 @@ function kindLabel(n: SymbolNode): string {
 
 /** Title line: the type, or the package for top-level functions. */
 function Title({ node, accent }: { node: SymbolNode; accent?: string }) {
-  if (node.kind === 'endpoint')
+  if (node.kind === 'endpoint' || node.kind === 'client')
     return (
       <div className="box-title">
-        <EndpointLabel display={node.display} />
+        {node.kind === 'endpoint' ? <EndpointLabel display={node.display} /> : <ClientLabel node={node} />}
+        {node.service && <span className="service-tag" title="service">{node.service}</span>}
       </div>
     )
   const owner = node.kind === 'constructor' ? node.ownerDisplay : node.ownerDisplay || node.display
@@ -84,7 +102,7 @@ function Title({ node, accent }: { node: SymbolNode; accent?: string }) {
 
 function Member({ node }: { node: SymbolNode }) {
   if (node.kind === 'constructor') return <div className="box-member">new{node.signature.replace(/:.*$/, '')}</div>
-  if (node.kind === 'trait' || node.kind === 'class' || node.kind === 'object' || node.kind === 'endpoint') return null
+  if (node.kind === 'trait' || node.kind === 'class' || node.kind === 'object' || node.kind === 'endpoint' || node.kind === 'client') return null
   return (
     <div className="box-member" title={`${node.name}${node.signature}`}>
       <span className="member-name">.{node.name}</span>

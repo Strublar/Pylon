@@ -96,17 +96,36 @@ Indexing runs in three passes over a service:
 The Tapir endpoint val is kept on the route (`key`) for phase 4: a client interpreting the same val in another service
 links to it exactly.
 
+## Cross-service links (phase 4)
+
+Each service is indexed on its own; links are recomputed over the whole graph after every `index`, so
+the order services are indexed in does not matter.
+
+- **Client nodes** (`kind = client`, `pylon:client/<service>/<protocol>/<file>:<line>:<offset>`) stand for one
+  outbound call site and are called by the enclosing method. gRPC/Kafka server sides become endpoints
+  (`GRPC pkg.Service/method`, `CONSUME topic`) like HTTP routes.
+- **`remotes`** holds, for every endpoint and client: protocol, verb, path template, an exact `key` when one exists
+  (Tapir endpoint val, gRPC method, topic) and a `hint` (source text of the client's base URL / config key).
+- **`Linker`** (pure, in core) produces **`links`** (client → endpoint, confidence, reason): exact keys 1.0;
+  HTTP verb + path 0.8, path suffix 0.5 (base URL with a prefix); a hint naming a service (whole word, or a
+  `pylon.json` rule) restricts candidates to it and adds 0.1; other services are preferred to the client's own.
+- `GraphStore.callees`/`callers` read links like calls, so walks and entrypoint paths cross services unchanged.
+
+Detection (`indexer/remote/`), package-checked through SemanticDB like endpoints:
+
+- `UrlTemplate` evaluates URL and topic expressions (literals, `s""`/`uri""`, `+`, http4s `/`, vals across files);
+  the leading unknown piece or `scheme://host` becomes the hint, the rest a path template with `{}` holes.
+- `HttpClients`: sttp, http4s client (incl. inline `Request(...)`), Play WS, Akka/Pekko `HttpRequest`/`RequestBuilding`,
+  and Tapir clients (key = endpoint val, path from the shared `Tapir.Shapes` evaluator).
+- `Grpc`: generated gRPC files (under `src_managed`, referencing a gRPC runtime) define rpc methods (abstract
+  members); a project call to an rpc or stub method becomes a client node *instead of* the generated stub, and calls
+  made from generated files (`bindService`) are dropped. Keys are normalised (`…Grpc`, `…Fs2Grpc`, `…Stub`,
+  `…Client`, zio `Z…`) so different generators of one `.proto` agree.
+- `Kafka`: producer records and subscriptions for kafka-clients, fs2-kafka, zio-kafka and Alpakka/Pekko connectors.
+
 ## Later phases
 
-1. **Cross-service links.**
-   - gRPC: ScalaPB, akka-grpc, fs2-grpc and zio-grpc server implementations are trait
-     implementations of the generated service trait, and the client stub calls match exactly.
-   - Tapir: endpoints shared by server and client match exactly (the route `key`).
-   - HTTP clients (sttp, http4s client, Play WS, Akka HTTP client): matched by HTTP method and path
-     template plus the base-URL config key. These links carry a confidence level, and a
-     `pylon.yaml` mapping file can override them.
-   - Kafka: a separate `publishes` edge kind.
-2. **Narrowing forks.** Use Guice `bind(...).to(...)` and constructor call sites
+1. **Narrowing forks.** Use Guice `bind(...).to(...)` and constructor call sites
    (`new ProviderA(...)`) to pre-select the implementation that is actually wired.
 
 ## Known limits
@@ -121,5 +140,8 @@ links to it exactly.
 - Route paths are evaluated statically. Segments built at runtime show as `{?}`, and prefixes applied
   outside the code (reverse proxy, servlet context) are not known.
 - Akka/Pekko: a method directive applied *above* a mounted route definition is not carried into it.
+- HTTP links are heuristics (shown with their confidence): URLs built far from the call (passed in as a
+  parameter, read from a map) evaluate to holes; Kafka topics read from config only link when both sides
+  use literal topic names.
 - SemanticDB plugin versions: Pylon picks the newest `semanticdb-scalac` published for each project's Scala 2
   version (table in `SbtRunner`); pass `--semanticdb-version` for versions newer than the table.

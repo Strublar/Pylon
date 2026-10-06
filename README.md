@@ -28,7 +28,7 @@ supported.
 | 1 | Indexer (SemanticDB + scalameta), SQLite graph, CLI queries | done |
 | 2 | Web viewer: walk down through forks, walk up to entrypoints | done |
 | 3 | Endpoints: Play routes, Tapir, http4s, ZIO HTTP, Akka/Pekko HTTP | done |
-| 4 | Cross-service links: gRPC, Tapir shared endpoints, HTTP clients, Kafka | planned |
+| 4 | Cross-service links: gRPC, Tapir shared endpoints, HTTP clients, Kafka | done |
 | 5 | Narrowing forks using DI wiring (Guice bindings, constructor sites) | planned |
 
 See [docs/DESIGN.md](docs/DESIGN.md).
@@ -64,6 +64,30 @@ The calls made by a route's handler belong to the endpoint, so walking down from
 goes straight into the service code, and climbing up from a service method ends at the endpoints
 that reach it.
 
+### Across services
+
+Index several services into the same graph and Pylon links the calls between them:
+
+| Transport | Client side | Server side | Match |
+|-----------|-------------|-------------|-------|
+| HTTP | sttp, http4s client, Play WS, Akka/Pekko HTTP client | any endpoint above | verb + path template (0.8), path suffix (0.5); +0.1 and narrowed when the base URL names a service |
+| Tapir | `SttpClientInterpreter().toRequest(endpoint, …)` | the same endpoint value with `serverLogic` | exact |
+| gRPC | calls to generated stubs/clients (ScalaPB, fs2-grpc, akka/pekko-grpc, zio-grpc) | implementations of the generated service trait (`GRPC pkg.Service/method`) | exact |
+| Kafka | `ProducerRecord(topic, …)`, `Producer.produce(topic, …)` | `subscribe`/`subscribeTo`/`Subscriptions.topics` (`CONSUME topic`) | exact topic |
+
+A client call becomes a box (`→ HTTP GET /catalog/items/{}`) whose dashed arrow leads into the other
+service's endpoint, with the match confidence; climbing up from an endpoint shows the calls from other
+services. When a base URL does not name its service, tell Pylon in `pylon.json`:
+
+```json
+{ "links": [ { "hint": "inventory.url", "service": "catalog" } ] }
+```
+
+```bash
+bin/pylon index --service gateway=../gateway --service catalog=../catalog
+bin/pylon links            # every call to another service and what it reaches
+```
+
 In the map:
 
 - **Calls ↓.** Each box is a step of the walk. When the step is a trait method, its box lists the
@@ -98,11 +122,13 @@ sbt executable used to compile indexed builds.
 ## Development
 
 ```bash
-bin/sbt test                  # unit tests + indexes the fixtures (Scala 2.13/3, and fixtures/web: one project per HTTP framework)
+bin/sbt test                  # unit tests + indexes the fixtures: Scala 2.13/3, fixtures/web (one project per HTTP
+                              # framework) and fixtures/system (two services linked over HTTP, Tapir, gRPC, Kafka)
 npm --prefix viewer run dev   # viewer with hot reload, proxying the API of `bin/pylon serve`
 
 # Browser end-to-end check (uses Playwright's Chromium) against the fixtures:
-bin/pylon index --service web=fixtures/web --service search=fixtures/search-3 --service legacy=fixtures/search-213
+bin/pylon index --service web=fixtures/web --service search=fixtures/search-3 --service legacy=fixtures/search-213 \
+  --service catalog=fixtures/system/catalog --service gateway=fixtures/system/gateway
 bin/pylon serve --port 7777 &
 npm --prefix viewer run e2e
 ```
