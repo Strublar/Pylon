@@ -8,6 +8,9 @@ export interface DownStep {
 
 export type Mode = 'down' | 'up'
 
+/** `packages`: classes drawn inside their package boxes; `chain`: one box per step, in columns. */
+export type View = 'packages' | 'chain'
+
 export interface ViewState {
   mode: Mode
   /** Root first. The last step is the one whose calls are shown. */
@@ -17,12 +20,14 @@ export interface ViewState {
   /** Node shown in the details panel. */
   selected?: string
   showExternal: boolean
+  /** Absent means `packages`. */
+  view?: View
 }
 
 export const emptyState: ViewState = { mode: 'down', down: [], up: [], showExternal: false }
 
-export function startAt(sym: string, mode: Mode = 'down'): ViewState {
-  return { mode, down: [{ sym }], up: [sym], selected: sym, showExternal: false }
+export function startAt(sym: string, mode: Mode = 'down', view?: View): ViewState {
+  return { mode, down: [{ sym }], up: [sym], selected: sym, showExternal: false, view }
 }
 
 export function readState(): ViewState {
@@ -36,7 +41,8 @@ export function readState(): ViewState {
   }
   const params = new URLSearchParams(window.location.search)
   const sym = params.get('sym')
-  return sym ? startAt(sym, params.get('mode') === 'up' ? 'up' : 'down') : emptyState
+  const view = params.get('view') === 'chain' ? 'chain' : undefined
+  return sym ? startAt(sym, params.get('mode') === 'up' ? 'up' : 'down', view) : { ...emptyState, view }
 }
 
 export function writeState(state: ViewState, replace = false): void {

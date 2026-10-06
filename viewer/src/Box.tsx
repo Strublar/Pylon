@@ -22,7 +22,7 @@ export interface Actions {
 
 export const ActionsContext = createContext<Actions | null>(null)
 
-const useActions = (): Actions => {
+export const useActions = (): Actions => {
   const a = useContext(ActionsContext)
   if (!a) throw new Error('ActionsContext missing')
   return a
@@ -37,7 +37,7 @@ export type BoxData =
 
 export type BoxNode = Node<BoxData, 'box'>
 
-function where(n: SymbolNode): string {
+export function where(n: SymbolNode): string {
   if (n.external) return 'library'
   const file = n.file ? n.file.split('/').pop() : ''
   const loc = `${file}${n.line ? `:${n.line}` : ''}`
@@ -111,7 +111,7 @@ function Member({ node }: { node: SymbolNode }) {
   )
 }
 
-function ImplList(props: { impls: SymbolNode[]; current?: string; onPick: (sym: string) => void; label: string }) {
+export function ImplList(props: { impls: SymbolNode[]; current?: string; onPick: (sym: string) => void; label: string }) {
   const services = new Set(props.impls.map((i) => i.service))
   return (
     <div className="impls">

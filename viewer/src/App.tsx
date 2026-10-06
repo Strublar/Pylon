@@ -4,6 +4,7 @@ import type { PathStep, Site, SymbolNode } from './api'
 import { api } from './api'
 import { ActionsContext, EndpointLabel, type Actions } from './Box'
 import { Canvas } from './Canvas'
+import { PackageCanvas } from './PackageMap'
 import { Details } from './Details'
 import { useAsync } from './hooks'
 import { loadDown, loadUp, type CanvasModel, type DownModel, type UpModel } from './model'
@@ -58,7 +59,10 @@ export function App() {
   const openPath = (path: PathStep[]) =>
     setState((s) => ({ ...s, mode: 'down', down: pathToSteps(path), selected: path[path.length - 1]?.node.symbol }))
 
-  const ready = model.status === 'ready' ? model.value : null
+  // While the next walk loads, the current one stays on screen (and so do the boxes the user moved).
+  const shownModel = useRef<CanvasModel | null>(null)
+  if (model.status !== 'loading') shownModel.current = model.status === 'ready' ? model.value : null
+  const ready = shownModel.current
   const selected = state.selected ?? (ready ? defaultSelection(ready) : undefined)
   const highlight = useHighlight(state, ready, selected)
 
@@ -69,7 +73,7 @@ export function App() {
           <div className="brand">
             <span className="brand-mark">▲</span> Pylon
           </div>
-          <Search onPick={(n) => setState(startAt(n.symbol, state.mode))} />
+          <Search onPick={(n) => setState((s) => startAt(n.symbol, s.mode, s.view))} />
           <div className="segmented" role="tablist">
             <button
               role="tab"
@@ -88,6 +92,26 @@ export function App() {
               Callers ↑
             </button>
           </div>
+          <div className="segmented" role="tablist" aria-label="Layout">
+            <button
+              role="tab"
+              aria-selected={state.view !== 'chain'}
+              className={state.view !== 'chain' ? 'on' : ''}
+              title="Classes and traits drawn inside their packages"
+              onClick={() => setState((s) => ({ ...s, view: undefined }), true)}
+            >
+              Packages
+            </button>
+            <button
+              role="tab"
+              aria-selected={state.view === 'chain'}
+              className={state.view === 'chain' ? 'on' : ''}
+              title="One box per step, in columns"
+              onClick={() => setState((s) => ({ ...s, view: 'chain' }), true)}
+            >
+              Chain
+            </button>
+          </div>
           {state.mode === 'down' && (
             <label className="toggle">
               <input type="checkbox" checked={state.showExternal} onChange={(e) => setState((s) => ({ ...s, showExternal: e.target.checked }), true)} />
@@ -102,10 +126,10 @@ export function App() {
           <div className="canvas">
             {model.status === 'loading' && state.down.length + state.up.length > 0 && <div className="overlay muted">Loading…</div>}
             {model.status === 'error' && <div className="overlay error">{model.error}</div>}
-            {model.status === 'ready' && !ready && <Welcome onPick={(n) => setState(startAt(n.symbol, 'down'))} />}
+            {model.status === 'ready' && !ready && <Welcome onPick={(n) => setState((s) => startAt(n.symbol, 'down', s.view))} />}
             {ready && (
-              <ReactFlowProvider>
-                <Canvas model={ready} selected={selected} />
+              <ReactFlowProvider key={state.view ?? 'packages'}>
+                {state.view === 'chain' ? <Canvas model={ready} selected={selected} /> : <PackageCanvas model={ready} selected={selected} />}
               </ReactFlowProvider>
             )}
           </div>
