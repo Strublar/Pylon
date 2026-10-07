@@ -4,11 +4,12 @@ import type { PathStep, Site, SymbolNode } from './api'
 import { api } from './api'
 import { ActionsContext, EndpointLabel, type Actions } from './Box'
 import { Canvas } from './Canvas'
-import { PackageCanvas } from './PackageMap'
+import { clearLayout, PackageCanvas } from './PackageMap'
+import { SidePanel } from './SidePanel'
 import { Details } from './Details'
 import { useAsync } from './hooks'
 import { loadDown, loadUp, type CanvasModel, type DownModel, type UpModel } from './model'
-import { effective, readState, startAt, writeState, type DownStep, type ViewState } from './state'
+import { effective, emptyState, readState, startAt, writeState, type DownStep, type ViewState } from './state'
 
 export function App() {
   const [state, setStateRaw] = useState<ViewState>(readState)
@@ -118,6 +119,17 @@ export function App() {
               library calls
             </label>
           )}
+          <button
+            className="toolbar-btn toolbar-end"
+            disabled={state.down.length + state.up.length === 0}
+            title="Clear the graph and start over"
+            onClick={() => {
+              clearLayout()
+              setState((s) => ({ ...emptyState, view: s.view }))
+            }}
+          >
+            Clear
+          </button>
         </header>
 
         {ready && <Breadcrumb model={ready} state={state} setState={setState} />}
@@ -134,7 +146,9 @@ export function App() {
             )}
           </div>
           {selected && (
-            <Details sym={selected} highlight={highlight} onSelect={actions.select} onWalkDown={walkDown} onWalkUp={walkUp} onOpenPath={openPath} />
+            <SidePanel>
+              <Details sym={selected} highlight={highlight} onSelect={actions.select} onWalkDown={walkDown} onWalkUp={walkUp} onOpenPath={openPath} />
+            </SidePanel>
           )}
         </main>
       </div>

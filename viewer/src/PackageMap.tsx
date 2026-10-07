@@ -1,12 +1,16 @@
 // Package map: packages as big boxes, the classes and traits of the walk inside them, arrows from method to
-// method. Every box can be dragged; where the user puts a box is kept across walks until "Reset layout".
+// method. Every box can be dragged and resized; where the user puts a box, and its size, are kept across walks
+// until "Reset layout".
 import {
   applyNodeChanges,
   Background,
   Controls,
   Handle,
   MarkerType,
+  NodeResizeControl,
+  NodeResizer,
   Panel,
+  ResizeControlVariant,
   Position,
   ReactFlow,
   useReactFlow,
@@ -30,6 +34,14 @@ type MapNode = PackageNode | ClassNode
 
 /** Where the user dragged boxes (packages: absolute, classes: inside their package). */
 const pinned = new Map<string, XYPosition>()
+/** Sizes the user gave boxes (classes: only the width counts, their height follows their rows). */
+const sized = new Map<string, { width: number; height: number }>()
+
+/** Forgets where the user put boxes and how they sized them. */
+export function clearLayout(): void {
+  pinned.clear()
+  sized.clear()
+}
 
 const SelectedContext = createContext<string | undefined>(undefined)
 
@@ -37,6 +49,7 @@ function PackageView({ data }: NodeProps<PackageNode>) {
   const p = data.pkg
   return (
     <div className={`pkg ${p.external ? 'pkg-external' : ''}`}>
+      <NodeResizer minWidth={160} minHeight={80} lineClassName="pm-resize-line" handleClassName="pm-resize-handle" />
       <div className="pkg-head">
         <span className="pkg-name" title={p.name}>
           {p.name}
@@ -51,7 +64,14 @@ function ClassView({ data }: NodeProps<ClassNode>) {
   const c = data.box
   const selected = useContext(SelectedContext)
   return (
-    <div className={`klass klass-${c.kind.replace(' ', '-')} ${c.external ? 'klass-external' : ''}`} style={{ width: c.width }}>
+    <div className={`klass klass-${c.kind.replace(' ', '-')} ${c.external ? 'klass-external' : ''}`}>
+      <NodeResizeControl
+        position="right"
+        variant={ResizeControlVariant.Line}
+        resizeDirection="horizontal"
+        minWidth={140}
+        className="pm-resize-line"
+      />
       <div className="klass-head">
         <span className="klass-name" title={c.title}>
           {c.title}
@@ -234,7 +254,7 @@ function toNodes(graph: PackageGraph, placed: Map<string, Placed>): MapNode[] {
     const at = placed.get(p.id) ?? { x: 0, y: 0, width: 300, height: 200 }
     const children = p.classes.map((c) => {
       const laid = placed.get(c.id)
-      return { c, pos: pinned.get(c.id) ?? { x: laid?.x ?? pad.side, y: laid?.y ?? pad.top } }
+      return { c, width: sized.get(c.id)?.width ?? c.width, pos: pinned.get(c.id) ?? { x: laid?.x ?? pad.side, y: laid?.y ?? pad.top } }
     })
     const shiftX = Math.max(0, pad.side - Math.min(...children.map((k) => k.pos.x)))
     const shiftY = Math.max(0, pad.top - Math.min(...children.map((k) => k.pos.y)))
@@ -245,12 +265,12 @@ function toNodes(graph: PackageGraph, placed: Map<string, Placed>): MapNode[] {
       type: 'package',
       position: { x: pos.x - shiftX, y: pos.y - shiftY },
       data: { pkg: p },
-      width: Math.max(at.width + shiftX, ...children.map((k) => k.pos.x + k.c.width + pad.side)),
-      height: Math.max(at.height + shiftY, ...children.map((k) => k.pos.y + k.c.height + pad.bottom)),
+      width: Math.max(sized.get(p.id)?.width ?? at.width + shiftX, ...children.map((k) => k.pos.x + k.width + pad.side)),
+      height: Math.max(sized.get(p.id)?.height ?? at.height + shiftY, ...children.map((k) => k.pos.y + k.c.height + pad.bottom)),
       zIndex: 0,
     })
-    children.forEach(({ c, pos }) =>
-      nodes.push({ id: c.id, type: 'klass', parentId: p.id, position: pos, data: { box: c }, expandParent: true, zIndex: 1 }),
+    children.forEach(({ c, pos, width }) =>
+      nodes.push({ id: c.id, type: 'klass', parentId: p.id, position: pos, data: { box: c }, width, expandParent: true, zIndex: 1 }),
     )
   }
   return nodes
@@ -299,12 +319,15 @@ export function PackageCanvas({ model, selected }: { model: CanvasModel; selecte
   }, [fit])
 
   const onNodesChange = useCallback((changes: NodeChange<MapNode>[]) => {
-    changes.forEach((c) => c.type === 'position' && c.position && pinned.set(c.id, c.position))
+    changes.forEach((c) => {
+      if (c.type === 'position' && c.position) pinned.set(c.id, c.position)
+      if (c.type === 'dimensions' && c.resizing && c.dimensions) sized.set(c.id, c.dimensions)
+    })
     setNodes((ns) => applyNodeChanges(changes, ns))
   }, [])
 
   const resetLayout = () => {
-    pinned.clear()
+    clearLayout()
     if (shown) setNodes(toNodes(shown.graph, shown.placed))
     setFit((f) => f + 1)
   }
@@ -346,7 +369,7 @@ export function PackageCanvas({ model, selected }: { model: CanvasModel; selecte
           <span>
             <i className="lg lg-link" /> another service
           </span>
-          <span className="muted">drag any box to rearrange</span>
+          <span className="muted">drag a box to move it, its edges to resize it</span>
         </Panel>
       </ReactFlow>
     </SelectedContext.Provider>
