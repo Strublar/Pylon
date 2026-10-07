@@ -90,6 +90,15 @@ bin/pylon links            # every call to another service and what it reaches
 
 In the map:
 
+- **Packages** (the default layout). Each package is a big box. The classes, traits and objects the walk goes
+  through sit inside their package, one row per method. Arrows go from the calling method to the called one,
+  so you can see which packages call into which. A dashed green arrow leads from a trait method to the
+  implementation being walked through. When a step is a fork, its implementations show up in their own
+  packages, and clicking one walks into it. A dashed blue arrow crosses into another service. Endpoints and
+  calls to other services get their own boxes per service. Every box can be dragged: drag a package to
+  move it together with its classes, or drag a class around inside its package (the package grows to fit).
+  Boxes stay where you put them as the walk goes on, until you click *Reset layout*. The *Chain* toggle
+  switches to the column layout described below.
 - **Calls ↓.** Each box is a step of the walk. When the step is a trait method, its box lists the
   implementations. Pick one and the box becomes that implementation, with its calls fanning out to
   the right on arrows labelled with the method name. A `⑂` marks a call into a trait; hover over

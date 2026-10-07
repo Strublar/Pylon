@@ -9,6 +9,8 @@ export default defineConfig({
   build: {
     outDir: '../modules/server/src/main/resources/viewer',
     emptyOutDir: true,
+    // ELK (the package map's layout engine) is a 1.4 MB chunk of its own, loaded on first use.
+    chunkSizeWarningLimit: 1600,
   },
   server: {
     proxy: { '/api': 'http://127.0.0.1:7777' },

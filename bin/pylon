@@ -22,7 +22,8 @@ stale() { # stale TARGET DIR... : true when TARGET is missing or older than any 
 if stale "$VIEWER_INDEX" "$ROOT/viewer/src" "$ROOT/viewer/index.html" "$ROOT/viewer/package.json"; then
   if command -v npm >/dev/null 2>&1; then
     echo "[pylon] building the web viewer" >&2
-    (cd "$ROOT/viewer" && { [[ -d node_modules ]] || npm ci --no-audit --no-fund >&2; } && npm run build >&2)
+    # Reinstall when the lockfile changed since the last install (a dependency was added or bumped).
+    (cd "$ROOT/viewer" && { ! stale node_modules/.package-lock.json package-lock.json || npm ci --no-audit --no-fund >&2; } && npm run build >&2)
   elif [[ ! -f "$VIEWER_INDEX" ]]; then
     echo "[pylon] npm not found: the web viewer will not be available (CLI queries still work)" >&2
   fi
