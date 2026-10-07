@@ -1,8 +1,10 @@
-import type { PathStep, Site } from './api'
+import type { PathStep, Site, Source } from './api'
 import { api } from './api'
 import { useAsync } from './hooks'
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ClientLabel, EndpointLabel } from './Box'
+import { canHighlight, highlightLines } from './highlight'
+import { useFitPanel } from './SidePanel'
 
 interface Props {
   sym: string
@@ -93,18 +95,7 @@ export function Details(props: Props) {
 
       {source.status === 'ready' && source.value && (
         <Section title="Source">
-          <pre className="source">
-            {source.value.lines.map((l, i) => {
-              const n = source.value!.startLine + i
-              const inDef = n >= source.value!.focusLine && n <= source.value!.endLine
-              return (
-                <div key={n} className={`src-line ${inDef ? 'src-def' : ''} ${highlighted.has(n) ? 'src-call' : ''}`}>
-                  <span className="src-no">{n}</span>
-                  <span className="src-text">{l || ' '}</span>
-                </div>
-              )
-            })}
-          </pre>
+          <SourceView source={source.value} highlighted={highlighted} />
         </Section>
       )}
     </aside>
@@ -169,5 +160,33 @@ function Paths(props: { sym: string; onOpen(path: PathStep[]): void }) {
         </li>
       ))}
     </ol>
+  )
+}
+
+/** The definition and its surroundings; while the pointer is on it, the panel widens to show whole lines. */
+function SourceView({ source, highlighted }: { source: Source; highlighted: Set<number> }) {
+  const fit = useFitPanel()
+  const ref = useRef<HTMLPreElement>(null)
+  const tokens = useMemo(() => (canHighlight(source.file) ? highlightLines(source.lines) : null), [source])
+  useEffect(() => () => fit(null), [fit])
+
+  return (
+    <pre className="source" ref={ref} onMouseEnter={() => fit(ref.current)} onMouseLeave={() => fit(null)}>
+      {source.lines.map((l, i) => {
+        const n = source.startLine + i
+        const inDef = n >= source.focusLine && n <= source.endLine
+        return (
+          <div key={n} className={`src-line ${inDef ? 'src-def' : ''} ${highlighted.has(n) ? 'src-call' : ''}`}>
+            <span className="src-no">{n}</span>
+            <span className="src-text">
+              {tokens
+                ? tokens[i]?.map((t, k) => (t.kind ? <span key={k} className={`hl-${t.kind}`}>{t.text}</span> : t.text))
+                : l}
+              {!l && ' '}
+            </span>
+          </div>
+        )
+      })}
+    </pre>
   )
 }
